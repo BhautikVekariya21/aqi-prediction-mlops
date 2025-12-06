@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+data/
+models/
+reports/
+.dvc/cache/
+.dvc/tmp/
+mlruns/
+.DS_Store

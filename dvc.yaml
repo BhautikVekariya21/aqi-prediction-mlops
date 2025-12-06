@@ -1,0 +1,111 @@
+stages:
+  data_ingestion:
+    cmd: python -m src.pipeline.stage_data_ingestion
+    deps:
+      - src/pipeline/stage_data_ingestion.py
+      - src/components/data_ingestion.py
+      - configs/cities.yaml
+    params:
+      - data_ingestion
+    outs:
+      - data/raw/aqi_india_raw.parquet
+    metrics:
+      - data/raw/ingestion_metrics.json:
+          cache: false
+
+  data_preprocessing:
+    cmd: python -m src.pipeline.stage_data_preprocessing
+    deps:
+      - src/pipeline/stage_data_preprocessing.py
+      - src/components/data_preprocessing.py
+      - data/raw/aqi_india_raw.parquet
+    params:
+      - data_preprocessing
+    outs:
+      - data/processed/aqi_india_processed.parquet
+
+  feature_engineering:
+    cmd: python -m src.pipeline.stage_feature_engineering
+    deps:
+      - src/pipeline/stage_feature_engineering.py
+      - src/components/feature_engineering.py
+      - data/processed/aqi_india_processed.parquet
+    params:
+      - feature_engineering
+    outs:
+      - data/features/aqi_features.parquet
+
+  feature_selection:
+    cmd: python -m src.pipeline.stage_feature_selection
+    deps:
+      - src/pipeline/stage_feature_selection.py
+      - src/components/feature_selection.py
+      - data/features/aqi_features.parquet
+    params:
+      - feature_selection
+    outs:
+      - data/features/selection/aqi_selected_features.parquet
+      - data/features/selection/selected_features.txt
+
+  data_splitting:
+    cmd: python -m src.pipeline.stage_data_splitting
+    deps:
+      - src/pipeline/stage_data_splitting.py
+      - src/components/data_splitting.py
+      - data/features/selection/aqi_selected_features.parquet
+    params:
+      - data_splitting
+    outs:
+      - data/splits/train.parquet
+      - data/splits/val.parquet
+      - data/splits/test.parquet
+      - data/splits/feature_names.txt
+
+  model_training:
+    cmd: python -m src.pipeline.stage_model_training
+    deps:
+      - src/pipeline/stage_model_training.py
+      - src/components/model_trainer.py
+      - data/splits/train.parquet
+      - data/splits/val.parquet
+    params:
+      - model_training
+      - model_params
+    outs:
+      - models/xgboost.json
+    metrics:
+      - models/training_metrics.json:
+          cache: false
+
+  model_optimization:
+    cmd: python -m src.pipeline.stage_model_optimization
+    deps:
+      - src/pipeline/stage_model_optimization.py
+      - src/components/model_optimizer.py
+      - models/xgboost.json
+    params:
+      - model_optimization
+    outs:
+      - models/optimized/xgboost_improved_lzma.pkl
+      - models/optimized/model.json.gz
+      - models/optimized/feature_names.txt
+      - models/optimized/model_metadata.json
+
+  model_evaluation:
+    cmd: python -m src.pipeline.stage_model_evaluation
+    deps:
+      - src/pipeline/stage_model_evaluation.py
+      - models/optimized/xgboost_improved_lzma.pkl
+      - data/splits/test.parquet
+    outs:
+      - models/evaluation/report.html
+
+  prediction_demo:
+    cmd: python -m src.inference.live_predictor --city Delhi --days 2
+    deps:
+      - src/inference/live_predictor.py
+      - models/optimized/xgboost_improved_lzma.pkl
+      - models/optimized/feature_names.txt
+    outs:
+      - reports/delhi_2day_forecast.csv:
+          cache: false
