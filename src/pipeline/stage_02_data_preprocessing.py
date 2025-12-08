@@ -25,7 +25,7 @@ def main():
     with LoggerContext("Stage 2: Data Preprocessing") as stage_logger:
         try:
             # Load config
-            config = ConfigReader("configs/params.yaml")
+            config = ConfigReader("params.yaml")
             stage_logger.info("Configuration loaded")
             
             # Initialize DagsHub manager

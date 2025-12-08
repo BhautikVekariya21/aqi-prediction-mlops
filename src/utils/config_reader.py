@@ -122,7 +122,7 @@ def load_cities_config(config_path: str = "configs/cities.yaml") -> Dict[str, Di
     return config.get("cities", {})
 
 
-def load_params_config(config_path: str = "configs/params.yaml") -> ConfigReader:
+def load_params_config(config_path: str = "params.yaml") -> ConfigReader:
     """
     Load pipeline parameters
     

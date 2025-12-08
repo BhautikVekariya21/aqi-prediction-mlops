@@ -27,7 +27,7 @@ class DagsHubManager:
             params_config: ConfigReader instance with params.yaml
         """
         if params_config is None:
-            params_config = ConfigReader("configs/params.yaml")
+            params_config = ConfigReader("params.yaml")
         
         self.config = params_config
         self._setup_credentials()

@@ -30,7 +30,7 @@ def main():
     with LoggerContext(f"Stage 9: Prediction Comparison - {args.city}") as stage_logger:
         try:
             # Load config
-            config = ConfigReader("configs/params.yaml")
+            config = ConfigReader("params.yaml")
             stage_logger.info("Configuration loaded")
             
             # Note: This stage doesn't use components (implemented in src/inference/)
