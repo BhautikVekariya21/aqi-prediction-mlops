@@ -1,0 +1,168 @@
+# =============================================================================
+# DVC PIPELINE DEFINITION - AQI PREDICTION MLOPS
+# =============================================================================
+# Run with: dvc repro
+# =============================================================================
+
+stages:
+  # ===========================================================================
+  # STAGE 1: DATA INGESTION
+  # ===========================================================================
+  data_ingestion:
+    cmd: python -m src.pipeline.stage_01_data_ingestion
+    deps:
+      - src/pipeline/stage_01_data_ingestion.py
+      - src/components/data_ingestion.py
+      - configs/cities.yaml
+    params:
+      - data_ingestion
+      - project.random_state
+    outs:
+      - data/raw/aqi_india_raw.parquet
+    metrics:
+      - data/raw/ingestion_metrics.json:
+          cache: false
+
+  # ===========================================================================
+  # STAGE 2: DATA PREPROCESSING
+  # ===========================================================================
+  data_preprocessing:
+    cmd: python -m src.pipeline.stage_02_data_preprocessing
+    deps:
+      - src/pipeline/stage_02_data_preprocessing.py
+      - src/components/data_preprocessing.py
+      - data/raw/aqi_india_raw.parquet
+    params:
+      - data_preprocessing
+      - project.random_state
+    outs:
+      - data/processed/aqi_india_processed.parquet
+    metrics:
+      - data/processed/preprocessing_metrics.json:
+          cache: false
+
+  # ===========================================================================
+  # STAGE 3: FEATURE ENGINEERING
+  # ===========================================================================
+  feature_engineering:
+    cmd: python -m src.pipeline.stage_03_feature_engineering
+    deps:
+      - src/pipeline/stage_03_feature_engineering.py
+      - src/components/feature_engineering.py
+      - data/processed/aqi_india_processed.parquet
+    params:
+      - feature_engineering
+      - project.random_state
+    outs:
+      - data/features/aqi_features.parquet
+    metrics:
+      - data/features/feature_metrics.json:
+          cache: false
+
+  # ===========================================================================
+  # STAGE 4: FEATURE SELECTION
+  # ===========================================================================
+  feature_selection:
+    cmd: python -m src.pipeline.stage_04_feature_selection
+    deps:
+      - src/pipeline/stage_04_feature_selection.py
+      - src/components/feature_selection.py
+      - data/features/aqi_features.parquet
+    params:
+      - feature_selection
+      - project.random_state
+    outs:
+      - data/features/selection/aqi_selected_features.parquet
+      - data/features/selection/selected_features.txt
+    metrics:
+      - data/features/selection/selection_metrics.json:
+          cache: false
+
+  # ===========================================================================
+  # STAGE 5: DATA SPLITTING
+  # ===========================================================================
+  data_splitting:
+    cmd: python -m src.pipeline.stage_05_data_splitting
+    deps:
+      - src/pipeline/stage_05_data_splitting.py
+      - src/components/data_splitting.py
+      - data/features/selection/aqi_selected_features.parquet
+      - data/features/selection/selected_features.txt
+    params:
+      - data_splitting
+      - project.random_state
+    outs:
+      - data/splits/train.parquet
+      - data/splits/validation.parquet
+      - data/splits/test.parquet
+      - data/splits/feature_names.txt
+    metrics:
+      - data/splits/split_metrics.json:
+          cache: false
+
+  # ===========================================================================
+  # STAGE 6: MODEL TRAINING
+  # ===========================================================================
+  model_training:
+    cmd: python -m src.pipeline.stage_06_model_training
+    deps:
+      - src/pipeline/stage_06_model_training.py
+      - src/components/model_trainer.py
+      - data/splits/train.parquet
+      - data/splits/validation.parquet
+      - data/splits/test.parquet
+      - data/splits/feature_names.txt
+    params:
+      - model_training
+      - model_params
+      - project.random_state
+    outs:
+      - models/xgboost.json
+      - models/features.txt
+    metrics:
+      - models/training_metrics.json:
+          cache: false
+
+  # ===========================================================================
+  # STAGE 7: MODEL OPTIMIZATION
+  # ===========================================================================
+  model_optimization:
+    cmd: python -m src.pipeline.stage_07_model_optimization
+    deps:
+      - src/pipeline/stage_07_model_optimization.py
+      - src/components/model_optimizer.py
+      - models/xgboost.json
+      - data/splits/train.parquet
+      - data/splits/validation.parquet
+      - data/splits/test.parquet
+      - data/splits/feature_names.txt
+    params:
+      - model_optimization
+      - project.random_state
+    outs:
+      - models/optimized/model_final.pkl
+      - models/optimized/model.json.gz
+      - models/optimized/features.txt
+      - models/optimized/model_metadata.json
+    metrics:
+      - models/optimized/optimization_metrics.json:
+          cache: false
+
+  # ===========================================================================
+  # STAGE 8: MODEL EVALUATION
+  # ===========================================================================
+  model_evaluation:
+    cmd: python -m src.pipeline.stage_08_model_evaluation
+    deps:
+      - src/pipeline/stage_08_model_evaluation.py
+      - src/components/model_evaluator.py
+      - models/optimized/model_final.pkl
+      - models/optimized/features.txt
+      - data/splits/test.parquet
+    params:
+      - model_evaluation
+    outs:
+      - models/evaluation/evaluation_report.json
+    metrics:
+      - models/evaluation/final_metrics.json:
+          cache: false

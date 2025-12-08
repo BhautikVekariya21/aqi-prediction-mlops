@@ -1,0 +1,39 @@
+# =============================================================================
+# PRODUCTION DEPENDENCIES - MINIMAL FOR RAILWAY DEPLOYMENT
+# =============================================================================
+
+# --- Core ML ---
+numpy==1.24.3
+pandas==2.0.3
+scikit-learn==1.3.0
+xgboost==2.0.3
+catboost==1.2.2
+optuna==3.3.0
+
+# --- API ---
+fastapi==0.103.1
+uvicorn[standard]==0.23.2
+pydantic==2.3.0
+python-multipart==0.0.6
+
+# --- MLOps ---
+mlflow==2.7.1
+dvc==3.27.0
+dvc-http==2.30.2
+
+# --- Data Handling ---
+pyarrow==13.0.0
+joblib==1.3.2
+
+# --- API Clients ---
+requests==2.31.0
+
+# --- Config ---
+PyYAML==6.0.1
+python-dotenv==1.0.0
+
+# --- Monitoring ---
+psutil==5.9.5
+
+# --- Compression ---
+lz4==4.3.2

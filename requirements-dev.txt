@@ -1,0 +1,28 @@
+# =============================================================================
+# DEVELOPMENT DEPENDENCIES
+# =============================================================================
+
+-r requirements.txt
+
+# --- Testing ---
+pytest==7.4.2
+pytest-cov==4.1.0
+httpx==0.25.0  # For FastAPI testing
+
+# --- Code Quality ---
+black==23.9.1
+flake8==6.1.0
+isort==5.12.0
+mypy==1.5.1
+
+# --- Notebook ---
+jupyter==1.0.0
+ipykernel==6.25.2
+matplotlib==3.7.2
+seaborn==0.12.2
+plotly==5.17.0
+kaleido==0.2.1  # For plotly static exports
+
+# --- Development ---
+ipdb==0.13.13
+autopep8==2.0.4

@@ -1,0 +1,56 @@
+# =============================================================================
+# DOCKER COMPOSE - LOCAL DEVELOPMENT & TESTING
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------------------------
+  # AQI Prediction API
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aqi-prediction-api
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - API_HOST=0.0.0.0
+      - LOG_LEVEL=INFO
+      - DAGSHUB_REPO_OWNER=${DAGSHUB_REPO_OWNER}
+      - DAGSHUB_REPO_NAME=${DAGSHUB_REPO_NAME}
+      - DAGSHUB_TOKEN=${DAGSHUB_TOKEN}
+    volumes:
+      # Mount source code for development (hot reload)
+      - ./src:/app/src
+      - ./configs:/app/configs
+      - ./models/optimized:/app/models/optimized
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ---------------------------------------------------------------------------
+  # DVC Pipeline Runner (Optional - for local pipeline execution)
+  # ---------------------------------------------------------------------------
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aqi-pipeline-runner
+    environment:
+      - DAGSHUB_REPO_OWNER=${DAGSHUB_REPO_OWNER}
+      - DAGSHUB_REPO_NAME=${DAGSHUB_REPO_NAME}
+      - DAGSHUB_TOKEN=${DAGSHUB_TOKEN}
+      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI}
+    volumes:
+      - ./:/app
+      - ~/.dvc:/root/.dvc  # Mount DVC cache
+    command: dvc repro
+    profiles:
+      - pipeline  # Only run when explicitly specified

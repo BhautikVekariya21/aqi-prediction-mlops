@@ -1,0 +1,73 @@
+# =============================================================================
+# AQI PREDICTION MLOPS - DOCKER IGNORE
+# =============================================================================
+
+# --- Git ---
+.git/
+.gitignore
+.github/
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg-info/
+dist/
+build/
+
+# --- Virtual Environments ---
+venv/
+env/
+.venv
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+
+# --- Jupyter ---
+notebooks/
+*.ipynb
+.ipynb_checkpoints/
+
+# --- Tests ---
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- DVC (use remote, not local) ---
+.dvc/cache/
+dvc_cache/
+
+# --- Large local data (pull from DagsHub) ---
+data/raw/*.parquet
+data/processed/*.parquet
+data/features/*.parquet
+data/splits/*.parquet
+
+# --- Unnecessary models (only copy optimized) ---
+models/xgboost.json
+models/training_metrics.json
+
+# --- Reports ---
+reports/
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Temp ---
+*.tmp
+*.bak
+
+# --- Documentation ---
+README.md
+MLOPS_GUIDE.md
+API_DOCUMENTATION.md
+
+# --- Scripts ---
+scripts/

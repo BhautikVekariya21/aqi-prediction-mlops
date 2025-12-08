@@ -1,0 +1,282 @@
+# =============================================================================
+# AQI PREDICTION MLOPS - PIPELINE PARAMETERS
+# =============================================================================
+
+# ----- Project Configuration -----
+project:
+  name: "aqi-prediction-mlops"
+  version: "1.0.0"
+  random_state: 42
+
+# ----- DagsHub Configuration -----
+dagshub:
+  repo_owner: "${DAGSHUB_REPO_OWNER}"
+  repo_name: "${DAGSHUB_REPO_NAME}"
+  tracking_uri: "https://dagshub.com/${DAGSHUB_REPO_OWNER}/${DAGSHUB_REPO_NAME}.mlflow"
+  dvc_remote: "dagshub"
+  enable_mlflow: true
+  enable_dvc: true
+
+# ----- Data Ingestion Parameters -----
+data_ingestion:
+  start_date: "2022-08-05"
+  end_date: null
+  
+  api:
+    timeout: 120
+    retry_attempts: 3
+    retry_delay: 5
+    rate_limit_min: 1.0
+    rate_limit_max: 2.0
+  
+  output:
+    raw_dir: "data/raw"
+    cities_per_batch: 3
+
+# ----- Data Preprocessing Parameters -----
+data_preprocessing:
+  input_path: "data/raw/aqi_india_raw.parquet"
+  output_dir: "data/processed"
+  
+  drop_columns:
+    - "eu_aqi"
+    - "eu_aqi_pm10"
+    - "eu_aqi_pm25"
+    - "rain_mm"
+    - "solar_radiation_wm2"
+    - "us_aqi_no2"
+    - "us_aqi_pm10"
+    - "us_aqi_pm25"
+    - "week_of_year"
+  
+  imputation:
+    method: "knn"
+    n_neighbors: 5
+    weights: "distance"
+  
+  outliers:
+    method: "winsorize"
+    lower_percentile: 0.005
+    upper_percentile: 0.997
+    columns:
+      - "pm2_5_ugm3"
+      - "pm10_ugm3"
+      - "co_ugm3"
+      - "no2_ugm3"
+      - "so2_ugm3"
+      - "o3_ugm3"
+      - "dust_ugm3"
+      - "aod"
+      - "us_aqi"
+      - "dew_point_c"
+      - "wind_gusts_kmh"
+
+# ----- Feature Engineering Parameters -----
+feature_engineering:
+  input_path: "data/processed/aqi_india_processed.parquet"
+  output_dir: "data/features"
+  target: "us_aqi"
+  
+  categorical_columns:
+    - "city"
+    - "state"
+  encoding_method: "label"
+  
+  create_cyclical_features: false
+  create_interaction_features: false
+  create_lag_features: false
+  create_rolling_features: false
+  
+  scaling_method: "none"
+
+# ----- Feature Selection Parameters -----
+feature_selection:
+  input_path: "data/features/aqi_features.parquet"
+  output_dir: "data/features/selection"
+  target: "us_aqi"
+  top_n_features: 30
+  
+  exclude_columns:
+    - "us_aqi"
+    - "datetime"
+    - "day_name"
+    - "season"
+    - "time_of_day"
+    - "aqi_category"
+    - "pm25_category_india"
+    - "festival_period"
+    - "crop_burning_season"
+  
+  must_have_features:
+    - "latitude"
+    - "longitude"
+    - "month"
+    - "city_encoded"
+    - "state_encoded"
+    - "is_weekend"
+  
+  methods:
+    correlation: true
+    mutual_info: true
+    decision_tree: true
+    lightgbm: true
+    xgboost: true
+
+# ----- Data Splitting Parameters -----
+data_splitting:
+  input_path: "data/features/selection/aqi_selected_features.parquet"
+  output_dir: "data/splits"
+  test_size: 0.15
+  validation_size: 0.15
+  stratify: true
+  stratify_bins: [0, 50, 100, 150, 200, 300, 500, 1000]
+
+# ----- Model Training Parameters -----
+model_training:
+  splits_dir: "data/splits"
+  output_dir: "models"
+  target: "us_aqi"
+  
+  models:
+    - "decision_tree"
+    - "random_forest"
+    - "extra_trees"
+    - "xgboost"
+    - "catboost"
+  
+  primary_metric: "r2_score"
+  early_stopping_rounds: 50
+  use_float32: true
+  n_jobs: 4
+  generate_plots: true
+  sample_size_for_plots: 5000
+
+# ----- Model Hyperparameters -----
+model_params:
+  decision_tree:
+    max_depth: 15
+    min_samples_split: 20
+    min_samples_leaf: 10
+  
+  random_forest:
+    n_estimators: 100
+    max_depth: 15
+    min_samples_split: 10
+    min_samples_leaf: 5
+    max_features: "sqrt"
+    n_jobs: 4
+  
+  extra_trees:
+    n_estimators: 100
+    max_depth: 15
+    min_samples_split: 10
+    min_samples_leaf: 5
+    max_features: "sqrt"
+    n_jobs: 4
+  
+  xgboost:
+    n_estimators: 500
+    max_depth: 8
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    reg_alpha: 0.1
+    reg_lambda: 0.1
+    tree_method: "hist"
+    n_jobs: 4
+  
+  catboost:
+    iterations: 500
+    depth: 8
+    learning_rate: 0.05
+    l2_leaf_reg: 3
+    thread_count: 4
+
+# ----- Model Optimization Parameters -----
+model_optimization:
+  models_dir: "models"
+  output_dir: "models/optimized"
+  splits_dir: "data/splits"
+  
+  target_size_mb: 25.0
+  compression_method: "gzip"
+  compression_level: 9
+  enable_precision_reduction: true
+  precision: 3
+  enable_retraining: true
+  
+  output_formats:
+    - "pkl"
+    - "gzip"
+  
+  optuna:
+    n_trials: 100
+    timeout: 3600
+    n_jobs: 4
+    study_name: "xgboost_optimization"
+    direction: "maximize"
+    
+    search_space:
+      max_depth: [6, 15]
+      learning_rate: [0.01, 0.2]
+      subsample: [0.7, 0.95]
+      colsample_bytree: [0.7, 0.95]
+      colsample_bylevel: [0.7, 0.95]
+      reg_alpha: [0.00001, 0.1]
+      reg_lambda: [0.00001, 0.1]
+      min_child_weight: [1, 10]
+      gamma: [0, 1.0]
+      max_bin: [128, 256]
+  
+  xgboost_optimized:
+    objective: "reg:squarederror"
+    max_depth: 10
+    learning_rate: 0.08
+    subsample: 0.85
+    colsample_bytree: 0.95
+    colsample_bylevel: 0.75
+    reg_alpha: 0.0001
+    reg_lambda: 0.00001
+    min_child_weight: 7
+    gamma: 0.5
+    max_bin: 128
+    tree_method: "hist"
+  
+  xgboost_training:
+    num_boost_round: 600
+    early_stopping_rounds: 50
+    verbose_eval: 50
+  
+  max_performance_degradation: 0.02
+
+# ----- Model Evaluation Parameters -----
+model_evaluation:
+  model_path: "models/optimized/model_final.pkl"
+  model_gzip_path: "models/optimized/model.json.gz"
+  test_data_path: "data/splits/test.parquet"
+  output_dir: "models/evaluation"
+  
+  metrics:
+    - "rmse"
+    - "mae"
+    - "r2_score"
+    - "mape"
+    - "within_5_pct"
+    - "within_10_pct"
+    - "within_25_pct"
+    - "within_50_pct"
+  
+  acceptance_thresholds:
+    r2_score_min: 0.90
+    rmse_max: 15.0
+    mae_max: 10.0
+    within_25_pct_min: 90.0
+
+# ----- Prediction Comparison Parameters -----
+prediction_comparison:
+  default_city: "Delhi"
+  default_days: 2
+  max_forecast_days: 3
+  open_meteo_weather_url: "https://api.open-meteo.com/v1/forecast"
+  open_meteo_aq_url: "https://air-quality-api.open-meteo.com/v1/air-quality"
+  cities_config_path: "configs/cities.yaml"

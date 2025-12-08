@@ -1,0 +1,31 @@
+# =============================================================================
+# AQI PREDICTION MLOPS - DVC IGNORE
+# =============================================================================
+
+# DVC should NOT track these
+
+# --- Git files ---
+.git/
+.gitignore
+.github/
+
+# --- Python cache ---
+__pycache__/
+*.pyc
+
+# --- Notebooks (reference only) ---
+notebooks/
+
+# --- Tests ---
+tests/
+
+# --- Scripts ---
+scripts/
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Temp ---
+*.tmp
+*.bak

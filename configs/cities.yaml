@@ -1,0 +1,149 @@
+# =============================================================================
+# 29 Indian Cities - State Capitals + Delhi
+# =============================================================================
+
+cities:
+  Visakhapatnam:
+    lat: 17.6868
+    lon: 83.2185
+    state: "Andhra Pradesh"
+  
+  Itanagar:
+    lat: 27.0844
+    lon: 93.6053
+    state: "Arunachal Pradesh"
+  
+  Guwahati:
+    lat: 26.1445
+    lon: 91.7362
+    state: "Assam"
+  
+  Patna:
+    lat: 25.5941
+    lon: 85.1376
+    state: "Bihar"
+  
+  Raipur:
+    lat: 21.2514
+    lon: 81.6296
+    state: "Chhattisgarh"
+  
+  Panaji:
+    lat: 15.4909
+    lon: 73.8278
+    state: "Goa"
+  
+  Ahmedabad:
+    lat: 23.0225
+    lon: 72.5714
+    state: "Gujarat"
+  
+  Gurugram:
+    lat: 28.4595
+    lon: 77.0266
+    state: "Haryana"
+  
+  Shimla:
+    lat: 31.1048
+    lon: 77.1734
+    state: "Himachal Pradesh"
+  
+  Ranchi:
+    lat: 23.3441
+    lon: 85.3096
+    state: "Jharkhand"
+  
+  Bengaluru:
+    lat: 12.9716
+    lon: 77.5946
+    state: "Karnataka"
+  
+  Thiruvananthapuram:
+    lat: 8.5241
+    lon: 76.9366
+    state: "Kerala"
+  
+  Bhopal:
+    lat: 23.2599
+    lon: 77.4126
+    state: "Madhya Pradesh"
+  
+  Mumbai:
+    lat: 19.0760
+    lon: 72.8777
+    state: "Maharashtra"
+  
+  Imphal:
+    lat: 24.8170
+    lon: 93.9368
+    state: "Manipur"
+  
+  Shillong:
+    lat: 25.5788
+    lon: 91.8933
+    state: "Meghalaya"
+  
+  Aizawl:
+    lat: 23.7271
+    lon: 92.7176
+    state: "Mizoram"
+  
+  Kohima:
+    lat: 25.6751
+    lon: 94.1086
+    state: "Nagaland"
+  
+  Bhubaneswar:
+    lat: 20.2961
+    lon: 85.8245
+    state: "Odisha"
+  
+  Chandigarh:
+    lat: 30.7333
+    lon: 76.7794
+    state: "Punjab"
+  
+  Jaipur:
+    lat: 26.9124
+    lon: 75.7873
+    state: "Rajasthan"
+  
+  Gangtok:
+    lat: 27.3389
+    lon: 88.6065
+    state: "Sikkim"
+  
+  Chennai:
+    lat: 13.0827
+    lon: 80.2707
+    state: "Tamil Nadu"
+  
+  Hyderabad:
+    lat: 17.3850
+    lon: 78.4867
+    state: "Telangana"
+  
+  Agartala:
+    lat: 23.8315
+    lon: 91.2868
+    state: "Tripura"
+  
+  Lucknow:
+    lat: 26.8467
+    lon: 80.9462
+    state: "Uttar Pradesh"
+  
+  Dehradun:
+    lat: 30.3165
+    lon: 78.0322
+    state: "Uttarakhand"
+  
+  Kolkata:
+    lat: 22.5726
+    lon: 88.3639
+    state: "West Bengal"
+  
+  Delhi:
+    lat: 28.6139
+    lon: 77.2090
+    state: "Delhi"
