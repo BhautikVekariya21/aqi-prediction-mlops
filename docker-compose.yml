@@ -1,56 +1,38 @@
 # =============================================================================
-# DOCKER COMPOSE - LOCAL DEVELOPMENT & TESTING
+# DOCKER COMPOSE - OPTIMIZED FOR LIGHTWEIGHT DEPLOYMENT
 # =============================================================================
 
 version: '3.8'
 
 services:
   # ---------------------------------------------------------------------------
-  # AQI Prediction API
+  # AQI Prediction API - Lightweight configuration
   # ---------------------------------------------------------------------------
   api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: aqi-prediction-api
+    container_name: aqi-api
     ports:
       - "8000:8000"
     environment:
       - PORT=8000
-      - API_HOST=0.0.0.0
+      - MODEL_PATH=/app/models/model.json.gz
+      - FEATURES_PATH=/app/models/features.txt
       - LOG_LEVEL=INFO
-      - DAGSHUB_REPO_OWNER=${DAGSHUB_REPO_OWNER}
-      - DAGSHUB_REPO_NAME=${DAGSHUB_REPO_NAME}
-      - DAGSHUB_TOKEN=${DAGSHUB_TOKEN}
-    volumes:
-      # Mount source code for development (hot reload)
-      - ./src:/app/src
-      - ./configs:/app/configs
-      - ./models/optimized:/app/models/optimized
+    # Limit resources to prevent machine crash
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-
-  # ---------------------------------------------------------------------------
-  # DVC Pipeline Runner (Optional - for local pipeline execution)
-  # ---------------------------------------------------------------------------
-  pipeline:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: aqi-pipeline-runner
-    environment:
-      - DAGSHUB_REPO_OWNER=${DAGSHUB_REPO_OWNER}
-      - DAGSHUB_REPO_NAME=${DAGSHUB_REPO_NAME}
-      - DAGSHUB_TOKEN=${DAGSHUB_TOKEN}
-      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI}
-    volumes:
-      - ./:/app
-      - ~/.dvc:/root/.dvc  # Mount DVC cache
-    command: dvc repro
-    profiles:
-      - pipeline  # Only run when explicitly specified

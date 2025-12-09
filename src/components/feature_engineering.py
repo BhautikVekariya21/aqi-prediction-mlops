@@ -84,7 +84,7 @@ class FeatureEngineering:
         # Save feature-engineered data
         output_file = self.output_dir / "aqi_features.parquet"
         df.to_parquet(output_file, index=False)
-        logger.info(f"\n✓ Feature-engineered data saved: {output_file}")
+        logger.info(f"\nOK Feature-engineered data saved: {output_file}")
         
         # Generate metrics
         metrics = self._generate_metrics(df, initial_columns)
@@ -93,7 +93,7 @@ class FeatureEngineering:
         metrics_file = self.output_dir / "feature_metrics.json"
         with open(metrics_file, 'w') as f:
             json.dump(metrics, f, indent=2)
-        logger.info(f"✓ Metrics saved: {metrics_file}")
+        logger.info(f"OK Metrics saved: {metrics_file}")
         
         # Print summary
         self._print_summary(df, initial_columns)
@@ -149,7 +149,7 @@ class FeatureEngineering:
         
         df['time_of_day'] = df['hour'].apply(get_time_of_day)
         
-        logger.info(f"   ✓ Created datetime features")
+        logger.info(f"   OK Created datetime features")
         
         return df
     
@@ -252,7 +252,7 @@ class FeatureEngineering:
         else:
             df['crop_burning_season'] = 0
         
-        logger.info(f"   ✓ Created derived features")
+        logger.info(f"   OK Created derived features")
         
         return df
     
@@ -265,7 +265,7 @@ class FeatureEngineering:
             if col in df.columns:
                 # Create sorted encoding (alphabetical)
                 df[f'{col}_encoded'] = pd.Categorical(df[col]).codes
-                logger.info(f"   ✓ Encoded {col} → {col}_encoded ({df[col].nunique()} categories)")
+                logger.info(f"   OK Encoded {col} to {col}_encoded ({df[col].nunique()} categories)")
         
         return df
     
@@ -287,7 +287,7 @@ class FeatureEngineering:
         for col in float_cols:
             df[col] = df[col].astype('float32')
         
-        logger.info(f"   ✓ Data types optimized")
+        logger.info(f"   OK Data types optimized")
         
         return df
     

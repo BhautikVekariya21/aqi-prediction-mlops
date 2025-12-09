@@ -1,0 +1,67 @@
+# =============================================================================
+# DEPLOY TO RAILWAY (DIRECT - NO DOCKER)
+# Triggers: Manual workflow dispatch, push to main, or tag creation
+# =============================================================================
+
+name: Deploy to Railway
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+
+env:
+  PYTHON_VERSION: "3.10"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # DEPLOY TO RAILWAY
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to Railway
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Verify deployment files
+        run: |
+          echo "Verifying deployment files..."
+          ls -la Procfile railway.json runtime.txt requirements.txt
+      
+      - name: Install Railway CLI
+        run: |
+          npm i -g @railway/cli
+      
+      - name: Deploy to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          railway up
+      
+      - name: Deployment summary
+        run: |
+          echo "✓ Deployment completed"
+          echo "Environment: ${{ github.event.inputs.environment || 'production' }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Branch: ${{ github.ref_name }}"

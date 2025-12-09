@@ -110,7 +110,7 @@ class DataPreprocessing:
         # Save processed data
         output_file = self.output_dir / "aqi_india_processed.parquet"
         df.to_parquet(output_file, index=False)
-        logger.info(f"\n✓ Processed data saved: {output_file}")
+        logger.info(f"\nOK Processed data saved: {output_file}")
         
         # Generate metrics
         metrics = self._generate_metrics(df, initial_shape)
@@ -119,7 +119,7 @@ class DataPreprocessing:
         metrics_file = self.output_dir / "preprocessing_metrics.json"
         with open(metrics_file, 'w') as f:
             json.dump(metrics, f, indent=2)
-        logger.info(f"✓ Metrics saved: {metrics_file}")
+        logger.info(f"OK Metrics saved: {metrics_file}")
         
         # Print summary
         self._print_summary(df, initial_shape)
@@ -170,7 +170,7 @@ class DataPreprocessing:
             if col in df.columns:
                 out_of_range = ((df[col] < low) | (df[col] > high)).sum()
                 if out_of_range > 0:
-                    logger.info(f"   {col}: {out_of_range} out-of-range values → NaN")
+                    logger.info(f"   {col}: {out_of_range} out-of-range values to NaN")
                     df.loc[(df[col] < low) | (df[col] > high), col] = np.nan
         
         return df
@@ -185,7 +185,7 @@ class DataPreprocessing:
             n_swaps = mask.sum()
             
             if n_swaps > 0:
-                logger.info(f"   Fixing {n_swaps} cases where PM2.5 > PM10 → swapping values")
+                logger.info(f"   Fixing {n_swaps} cases where PM2.5 > PM10 to swapping values")
                 df.loc[mask, ['pm2_5_ugm3', 'pm10_ugm3']] = \
                     df.loc[mask, ['pm10_ugm3', 'pm2_5_ugm3']].values
         
@@ -205,7 +205,7 @@ class DataPreprocessing:
             if col in df.columns:
                 n_negative = (df[col] < 0).sum()
                 if n_negative > 0:
-                    logger.info(f"   {col}: {n_negative} negative values → clipped to 0")
+                    logger.info(f"   {col}: {n_negative} negative values to clipped to 0")
                     df[col] = df[col].clip(lower=0)
         
         return df
@@ -234,7 +234,7 @@ class DataPreprocessing:
             arr_winsorized = winsorize(arr, limits=limits)
             df[col] = pd.Series(arr_winsorized, index=df.index)
             
-            logger.info(f"     ✓ {col}")
+            logger.info(f"     OK {col}")
         
         return df
     
@@ -266,7 +266,7 @@ class DataPreprocessing:
         # Verify
         missing_after = df[numeric_cols].isnull().sum().sum()
         logger.info(f"   Missing values after imputation: {missing_after:,}")
-        logger.info(f"   ✓ KNN imputation complete")
+        logger.info(f"   OK KNN imputation complete")
         
         return df
     

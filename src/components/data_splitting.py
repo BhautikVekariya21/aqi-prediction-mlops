@@ -128,7 +128,8 @@ class DataSplitting:
             split_data.append(y_bins)
         
         # First split: train+val vs test
-        temp_data, test_data = train_test_split(
+        # train_test_split returns: X_temp, X_test, y_temp, y_test, dt_temp, dt_test, etc.
+        split_result = train_test_split(
             *split_data,
             test_size=self.test_size,
             random_state=self.random_state,
@@ -136,31 +137,34 @@ class DataSplitting:
             shuffle=True
         )
         
-        # Extract temp data
-        X_temp = temp_data[0]
-        y_temp = temp_data[1]
-        idx = 2
-        dt_temp = temp_data[idx] if datetime_col is not None else None
-        idx += 1 if datetime_col is not None else 0
-        city_temp = temp_data[idx] if city_col is not None else None
-        idx += 1 if city_col is not None else 0
-        state_temp = temp_data[idx] if state_col is not None else None
-        idx += 1 if state_col is not None else 0
-        bins_temp = temp_data[idx] if y_bins is not None else None
+        # Unpack results (order: temp, test, temp, test, ...)
+        # For n inputs, we get 2*n outputs (alternating temp and test)
+        n_inputs = len(split_data)
+        X_temp = split_result[0]
+        X_test = split_result[1]
+        y_temp = split_result[2]
+        y_test = split_result[3]
         
-        # Extract test data
-        X_test = test_data[0]
-        y_test = test_data[1]
-        idx = 2
-        dt_test = test_data[idx] if datetime_col is not None else None
-        idx += 1 if datetime_col is not None else 0
-        city_test = test_data[idx] if city_col is not None else None
-        idx += 1 if city_col is not None else 0
-        state_test = test_data[idx] if state_col is not None else None
+        idx = 4
+        dt_temp = split_result[idx] if datetime_col is not None else None
+        dt_test = split_result[idx + 1] if datetime_col is not None else None
+        idx += 2 if datetime_col is not None else 0
+        
+        city_temp = split_result[idx] if city_col is not None else None
+        city_test = split_result[idx + 1] if city_col is not None else None
+        idx += 2 if city_col is not None else 0
+        
+        state_temp = split_result[idx] if state_col is not None else None
+        state_test = split_result[idx + 1] if state_col is not None else None
+        idx += 2 if state_col is not None else 0
+        
+        bins_temp = split_result[idx] if y_bins is not None else None
+        bins_test = split_result[idx + 1] if y_bins is not None else None
         
         # Second split: train vs validation (from notebook)
         val_size_adjusted = self.validation_size / (1 - self.test_size)
         
+        # Second split: train vs validation
         temp_data2 = [X_temp, y_temp]
         if dt_temp is not None:
             temp_data2.append(dt_temp)
@@ -169,7 +173,7 @@ class DataSplitting:
         if state_temp is not None:
             temp_data2.append(state_temp)
         
-        train_data, val_data = train_test_split(
+        split_result2 = train_test_split(
             *temp_data2,
             test_size=val_size_adjusted,
             random_state=self.random_state,
@@ -177,27 +181,25 @@ class DataSplitting:
             shuffle=True
         )
         
-        # Extract train data
-        X_train = train_data[0]
-        y_train = train_data[1]
-        idx = 2
-        dt_train = train_data[idx] if dt_temp is not None else None
-        idx += 1 if dt_temp is not None else 0
-        city_train = train_data[idx] if city_temp is not None else None
-        idx += 1 if city_temp is not None else 0
-        state_train = train_data[idx] if state_temp is not None else None
+        # Extract train and val data
+        X_train = split_result2[0]
+        X_val = split_result2[1]
+        y_train = split_result2[2]
+        y_val = split_result2[3]
         
-        # Extract val data
-        X_val = val_data[0]
-        y_val = val_data[1]
-        idx = 2
-        dt_val = val_data[idx] if dt_temp is not None else None
-        idx += 1 if dt_temp is not None else 0
-        city_val = val_data[idx] if city_temp is not None else None
-        idx += 1 if city_temp is not None else 0
-        state_val = val_data[idx] if state_temp is not None else None
+        idx = 4
+        dt_train = split_result2[idx] if dt_temp is not None else None
+        dt_val = split_result2[idx + 1] if dt_temp is not None else None
+        idx += 2 if dt_temp is not None else 0
         
-        logger.info(f"   ✓ Split complete:")
+        city_train = split_result2[idx] if city_temp is not None else None
+        city_val = split_result2[idx + 1] if city_temp is not None else None
+        idx += 2 if city_temp is not None else 0
+        
+        state_train = split_result2[idx] if state_temp is not None else None
+        state_val = split_result2[idx + 1] if state_temp is not None else None
+        
+        logger.info(f"   OK Split complete:")
         logger.info(f"     Train: {len(X_train):,} ({len(X_train)/len(df)*100:.1f}%)")
         logger.info(f"     Val:   {len(X_val):,} ({len(X_val)/len(df)*100:.1f}%)")
         logger.info(f"     Test:  {len(X_test):,} ({len(X_test)/len(df)*100:.1f}%)")
@@ -225,16 +227,16 @@ class DataSplitting:
         val_df.to_parquet(val_path, index=False)
         test_df.to_parquet(test_path, index=False)
         
-        logger.info(f"   ✓ Train saved: {train_path.name}")
-        logger.info(f"   ✓ Validation saved: {val_path.name}")
-        logger.info(f"   ✓ Test saved: {test_path.name}")
+        logger.info(f"   OK Train saved: {train_path.name}")
+        logger.info(f"   OK Validation saved: {val_path.name}")
+        logger.info(f"   OK Test saved: {test_path.name}")
         
         # Save feature names
         features_file = self.output_dir / "feature_names.txt"
         with open(features_file, 'w') as f:
             for feat in feature_cols:
                 f.write(f"{feat}\n")
-        logger.info(f"   ✓ Feature names saved: {features_file.name}")
+        logger.info(f"   OK Feature names saved: {features_file.name}")
         
         # Generate metrics
         metrics = self._generate_metrics(df, train_df, val_df, test_df, feature_cols)
@@ -243,7 +245,7 @@ class DataSplitting:
         metrics_file = self.output_dir / "split_metrics.json"
         with open(metrics_file, 'w') as f:
             json.dump(metrics, f, indent=2)
-        logger.info(f"   ✓ Metrics saved: {metrics_file.name}")
+        logger.info(f"   OK Metrics saved: {metrics_file.name}")
         
         # Print summary
         self._print_summary(train_df, val_df, test_df)
@@ -284,7 +286,7 @@ class DataSplitting:
         logger.info(f"     Train: {n_extreme_train:,} ({pct_train:.2f}%)")
         logger.info(f"     Val:   {n_extreme_val:,} ({pct_val:.2f}%)")
         logger.info(f"     Test:  {n_extreme_test:,} ({pct_test:.2f}%)")
-        logger.info(f"   ✓ Stratification successful - extreme values in all splits")
+        logger.info(f"   OK Stratification successful - extreme values in all splits")
     
     def _create_dataframe(
         self,

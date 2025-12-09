@@ -1,13 +1,13 @@
 #!/bin/bash
 # =============================================================================
-# DEPLOY TO RAILWAY
-# Helper script for Railway deployment via Railway CLI
+# DEPLOY TO RAILWAY (DIRECT - NO DOCKER)
+# Deploys FastAPI app directly using Railway CLI
 # =============================================================================
 
 set -e
 
 echo "========================================"
-echo "Deploy to Railway"
+echo "Deploy to Railway (Direct)"
 echo "========================================"
 
 # Check if Railway CLI is installed
@@ -16,6 +16,9 @@ if ! command -v railway &> /dev/null; then
     echo ""
     echo "Install with:"
     echo "  npm i -g @railway/cli"
+    echo ""
+    echo "Or use:"
+    echo "  brew install railway"
     echo ""
     exit 1
 fi
@@ -39,8 +42,18 @@ echo ""
 echo "Railway User: $(railway whoami)"
 echo ""
 
+# Verify optimized model exists
+if [ ! -f "models/optimized/model_final.pkl" ] && [ ! -f "models/optimized/model.json.gz" ]; then
+    echo "ERROR: Optimized model not found!"
+    echo "Run: dvc repro to generate the model"
+    exit 1
+fi
+
+echo "✓ Optimized model found"
+echo ""
+
 # Link to project (if not already linked)
-if [ ! -f "railway.json" ]; then
+if [ ! -f "railway.json" ] && [ ! -f ".railway" ]; then
     echo "Project not linked to Railway"
     echo ""
     read -p "Link to existing project? (y/n) " -n 1 -r
@@ -54,21 +67,43 @@ if [ ! -f "railway.json" ]; then
     fi
 fi
 
+# Set environment variables
 echo ""
-echo "Deploying to Railway..."
+echo "Setting environment variables..."
+railway variables set MODEL_PATH=models/optimized/model_final.pkl
+railway variables set FEATURES_PATH=models/optimized/features.txt
+railway variables set LOG_LEVEL=INFO
+
+echo "✓ Environment variables set"
 echo ""
 
 # Deploy
+echo "Deploying to Railway..."
+echo "This may take a few minutes..."
+echo ""
+
 railway up
 
-echo ""
-echo "========================================"
-echo "✓ Deployment initiated!"
-echo "========================================"
-echo ""
-echo "Monitor deployment:"
-echo "  railway logs"
-echo ""
-echo "Open in browser:"
-echo "  railway open"
-echo ""
+if [ $? -eq 0 ]; then
+    echo ""
+    echo "========================================"
+    echo "✓ Deployment successful!"
+    echo "========================================"
+    echo ""
+    echo "Your API is now live!"
+    echo ""
+    echo "View deployment:"
+    echo "  railway open"
+    echo ""
+    echo "View logs:"
+    echo "  railway logs"
+    echo ""
+    echo "Get domain:"
+    echo "  railway domain"
+    echo ""
+else
+    echo ""
+    echo "ERROR: Deployment failed!"
+    echo "Check logs with: railway logs"
+    exit 1
+fi

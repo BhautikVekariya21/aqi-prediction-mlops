@@ -85,7 +85,7 @@ class ModelEvaluator:
         logger.info(f"\n3. Making predictions on test set")
         y_pred = model.predict(X_test)
         
-        logger.info(f"   ✓ Predictions generated")
+        logger.info(f"   OK Predictions generated")
         
         # Step 4: Calculate all metrics
         logger.info(f"\n4. Calculating metrics")
@@ -128,7 +128,7 @@ class ModelEvaluator:
         report_file = self.output_dir / "evaluation_report.json"
         with open(report_file, 'w') as f:
             json.dump(evaluation_report, f, indent=2)
-        logger.info(f"   ✓ Evaluation report saved: {report_file}")
+        logger.info(f"   OK Evaluation report saved: {report_file}")
         
         # Save final metrics (for DVC)
         final_metrics = {
@@ -145,12 +145,12 @@ class ModelEvaluator:
         metrics_file = self.output_dir / "final_metrics.json"
         with open(metrics_file, 'w') as f:
             json.dump(final_metrics, f, indent=2)
-        logger.info(f"   ✓ Final metrics saved: {metrics_file}")
+        logger.info(f"   OK Final metrics saved: {metrics_file}")
         
         # Print summary
         self._print_summary(metrics, acceptance_status, category_analysis)
         
-        logger.info(f"\n✓ Model evaluation complete!")
+        logger.info(f"\nOK Model evaluation complete!")
         
         return str(report_file)
     
@@ -160,7 +160,7 @@ class ModelEvaluator:
         if self.model_path.exists():
             logger.info(f"   Loading model from: {self.model_path}")
             model = joblib.load(self.model_path)
-            logger.info(f"   ✓ Model loaded (PKL)")
+            logger.info(f"   OK Model loaded (PKL)")
         
         # Fallback to GZIP
         elif self.model_gzip_path.exists():
@@ -179,7 +179,7 @@ class ModelEvaluator:
             # Cleanup
             temp_json.unlink()
             
-            logger.info(f"   ✓ Model loaded (GZIP)")
+            logger.info(f"   OK Model loaded (GZIP)")
         
         else:
             raise FileNotFoundError(f"Model not found at {self.model_path} or {self.model_gzip_path}")
@@ -189,7 +189,7 @@ class ModelEvaluator:
         with open(features_file, 'r') as f:
             feature_names = [line.strip() for line in f.readlines()]
         
-        logger.info(f"   ✓ Features loaded: {len(feature_names)}")
+        logger.info(f"   OK Features loaded: {len(feature_names)}")
         
         return model, feature_names
     
@@ -404,10 +404,10 @@ class ModelEvaluator:
         logger.info(f"\n   Acceptance Criteria:")
         for criterion, status in acceptance_status.items():
             if criterion != 'overall':
-                status_symbol = "✓" if status['passed'] else "✗"
+                status_symbol = "OK" if status['passed'] else "FAILED"
                 logger.info(f"     {status_symbol} {criterion:<20} Threshold: {status['threshold']:>8.2f} | Actual: {status['actual']:>8.2f}")
         
-        logger.info(f"\n   Overall Status: {'PASSED ✓' if all_passed else 'FAILED ✗'}")
+        logger.info(f"\n   Overall Status: {'PASSED OK' if all_passed else 'FAILED FAILED'}")
         
         return acceptance_status
     
@@ -438,9 +438,9 @@ class ModelEvaluator:
         print("\nAcceptance Status:")
         for criterion, status in acceptance_status.items():
             if criterion != 'overall':
-                status_symbol = "✓" if status['passed'] else "✗"
+                status_symbol = "OK" if status['passed'] else "FAILED"
                 print(f"  {status_symbol} {criterion:<20} Required: {status['threshold']:>8.2f} | Actual: {status['actual']:>8.2f}")
         
         print("\n" + "="*90)
-        print(f"OVERALL STATUS: {'PASSED ✓' if acceptance_status['overall'] else 'FAILED ✗'}")
+        print(f"OVERALL STATUS: {'PASSED OK' if acceptance_status['overall'] else 'FAILED FAILED'}")
         print("="*90)

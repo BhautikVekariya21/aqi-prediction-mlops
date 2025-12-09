@@ -1,0 +1,6 @@
+[core]
+    remote = dagshub
+    no_scm = false
+    autostage = true
+['remote "dagshub"']
+    url = https://dagshub.com/BhautikVekariya21/aqi-prediction-mlops.dvc

@@ -1,0 +1,53 @@
+# Data files
+data/
+notebooks/
+tests/
+
+# Development
+.vscode/
+.idea/
+*.pyc
+__pycache__/
+.pytest_cache/
+
+# Git
+.git/
+.gitignore
+.dvc/
+.dvcignore
+
+# Docker (not used)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# CI/CD
+.github/
+
+# Documentation
+*.md
+!README.md
+
+# Logs
+logs/
+*.log
+
+# Environment
+.env
+.env.example
+
+# Cache
+.cache/
+*.egg-info/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keep only optimized models
+models/xgboost.json
+models/catboost.cbm
+models/random_forest.pkl
+models/training_metrics.json

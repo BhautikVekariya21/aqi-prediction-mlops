@@ -1,73 +1,100 @@
 # =============================================================================
-# AQI PREDICTION MLOPS - DOCKER IGNORE
+# DOCKER IGNORE - Exclude unnecessary files from Docker build
+# Reduces image size and build time
 # =============================================================================
 
-# --- Git ---
-.git/
-.gitignore
-.github/
-
-# --- Python ---
+# Python cache
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
+*.py[cod]
+*$py.class
 *.so
-*.egg-info/
-dist/
-build/
+.Python
 
-# --- Virtual Environments ---
+# Virtual environments
 venv/
 env/
+ENV/
 .venv
 
-# --- IDE ---
+# IDE
 .vscode/
 .idea/
 *.swp
+*.swo
+*~
 
-# --- Jupyter ---
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# DVC (exclude all DVC files and cache)
+.dvc/
+*.dvc
+dvc.lock
+
+# Data directories (CRITICAL: Don't include training data)
+data/
 notebooks/
-*.ipynb
-.ipynb_checkpoints/
+experiments/
 
-# --- Tests ---
+# Model artifacts (exclude large training artifacts)
+models/xgboost.json
+models/training_metrics.json
+models/evaluation/
+models/*.pkl
+!models/optimized/model.json.gz
+!models/optimized/features.txt
+
+# Logs
+logs/
+*.log
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Tests
 tests/
 .pytest_cache/
 .coverage
 htmlcov/
+.tox/
 
-# --- DVC (use remote, not local) ---
-.dvc/cache/
-dvc_cache/
+# CI/CD
+.github/
+.gitlab-ci.yml
 
-# --- Large local data (pull from DagsHub) ---
-data/raw/*.parquet
-data/processed/*.parquet
-data/features/*.parquet
-data/splits/*.parquet
-
-# --- Unnecessary models (only copy optimized) ---
-models/xgboost.json
-models/training_metrics.json
-
-# --- Reports ---
-reports/
-
-# --- Logs ---
-*.log
-logs/
-
-# --- Temp ---
-*.tmp
-*.bak
-
-# --- Documentation ---
-README.md
-MLOPS_GUIDE.md
-API_DOCUMENTATION.md
-
-# --- Scripts ---
+# Scripts (not needed in container)
 scripts/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Training components (not needed for serving)
+src/components/
+src/pipeline/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Docker
+docker-compose.yml
+Dockerfile.dev
+
+# Requirements (we create minimal one in Dockerfile)
+requirements.txt
+requirements-dev.txt

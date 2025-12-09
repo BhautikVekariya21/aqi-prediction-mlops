@@ -14,6 +14,7 @@ from src.components.data_ingestion import DataIngestion
 from src.utils.logger import get_logger, LoggerContext
 from src.utils.config_reader import ConfigReader
 from src.utils.dagshub_utils import DagsHubManager
+from src.utils.memory_manager import MemoryManager
 
 
 logger = get_logger(__name__)
@@ -22,10 +23,19 @@ logger = get_logger(__name__)
 def main():
     """Run data ingestion stage"""
     
+    # Initialize memory manager
+    memory_manager = MemoryManager()
+    
     with LoggerContext("Stage 1: Data Ingestion") as stage_logger:
         try:
+            # Cleanup memory before starting
+            stage_logger.info("=" * 80)
+            memory_manager.cleanup_memory("Stage 1: Data Ingestion")
+            memory_manager.start_monitoring("Stage 1")
+            stage_logger.info("=" * 80)
+            
             # Load config
-            config = ConfigReader("params.yaml")
+            config = ConfigReader("configs/params.yaml")
             stage_logger.info("Configuration loaded")
             
             # Initialize DagsHub manager
@@ -69,11 +79,27 @@ def main():
                 
                 dagshub_manager.log_artifact(str(metrics_file))
             
+            # End memory monitoring
+            stage_logger.info("=" * 80)
+            mem_stats = memory_manager.end_monitoring("Stage 1")
+            
+            # Log memory metrics to MLflow
+            if mem_stats:
+                dagshub_manager.log_metrics({
+                    "memory_initial_mb": mem_stats['initial_mb'],
+                    "memory_final_mb": mem_stats['final_mb'],
+                    "memory_increase_mb": mem_stats['increase_mb']
+                })
+            stage_logger.info("=" * 80)
+            
             # End MLflow run
             dagshub_manager.end_run()
             
             stage_logger.info(f"Data ingestion completed successfully")
             stage_logger.info(f"Output: {output_file}")
+            
+            # Final cleanup
+            memory_manager.cleanup_memory("Stage 1: Post-execution")
             
             return 0
         
@@ -87,6 +113,9 @@ def main():
                 dagshub_manager.end_run()
             except:
                 pass
+            
+            # Cleanup memory even on failure
+            memory_manager.cleanup_memory("Stage 1: Error cleanup")
             
             return 1
 

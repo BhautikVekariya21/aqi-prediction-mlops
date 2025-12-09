@@ -13,6 +13,7 @@ sys.path.insert(0, str(project_root))
 
 from src.utils.logger import get_logger, LoggerContext
 from src.utils.config_reader import ConfigReader
+from src.utils.memory_manager import MemoryManager
 
 
 logger = get_logger(__name__)
@@ -20,6 +21,9 @@ logger = get_logger(__name__)
 
 def main():
     """Run prediction comparison stage"""
+    
+    # Initialize memory manager
+    memory_manager = MemoryManager()
     
     # Parse arguments
     parser = argparse.ArgumentParser(description="Run prediction comparison")
@@ -29,8 +33,14 @@ def main():
     
     with LoggerContext(f"Stage 9: Prediction Comparison - {args.city}") as stage_logger:
         try:
+            # Cleanup memory before starting
+            stage_logger.info("=" * 80)
+            memory_manager.cleanup_memory("Stage 9: Prediction Comparison")
+            memory_manager.start_monitoring("Stage 9")
+            stage_logger.info("=" * 80)
+            
             # Load config
-            config = ConfigReader("params.yaml")
+            config = ConfigReader("configs/params.yaml")
             stage_logger.info("Configuration loaded")
             
             # Note: This stage doesn't use components (implemented in src/inference/)
@@ -60,8 +70,16 @@ def main():
             with open(metrics_file, 'w') as f:
                 json.dump(prediction_metrics, f, indent=2)
             
+            # End memory monitoring
+            stage_logger.info("=" * 80)
+            mem_stats = memory_manager.end_monitoring("Stage 9")
+            stage_logger.info("=" * 80)
+            
             stage_logger.info(f"Prediction comparison completed")
             stage_logger.info(f"Note: Full implementation in src/inference/live_predictor.py")
+            
+            # Final cleanup
+            memory_manager.cleanup_memory("Stage 9: Post-execution")
             
             return 0
         
@@ -69,6 +87,8 @@ def main():
             logger.error(f"Prediction comparison failed: {e}")
             import traceback
             traceback.print_exc()
+            
+            memory_manager.cleanup_memory("Stage 9: Error cleanup")
             
             return 1
 

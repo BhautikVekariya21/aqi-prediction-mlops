@@ -163,7 +163,7 @@ class ModelTrainer:
         metrics_file = self.output_dir / "training_metrics.json"
         with open(metrics_file, 'w') as f:
             json.dump(metrics, f, indent=2)
-        logger.info(f"   ✓ Metrics saved: {metrics_file}")
+        logger.info(f"   OK Metrics saved: {metrics_file}")
         
         # Print final summary
         self._print_final_summary(comparison_df, best_model_name, results)
@@ -171,7 +171,7 @@ class ModelTrainer:
         # Return path to best model
         best_model_path = self.output_dir / f"{best_model_name}.json"
         
-        logger.info(f"\n✓ Model training complete!")
+        logger.info(f"\nOK Model training complete!")
         logger.info(f"Best model: {best_model_name}")
         logger.info(f"Path: {best_model_path}")
         
@@ -224,7 +224,7 @@ class ModelTrainer:
                     min_samples_leaf=params.get("min_samples_leaf", 10),
                     random_state=self.random_state
                 )
-                logger.info(f"   ✓ Decision Tree initialized")
+                logger.info(f"   OK Decision Tree initialized")
             
             elif model_name == "random_forest":
                 params = self.model_params.get("random_forest", {})
@@ -238,7 +238,7 @@ class ModelTrainer:
                     random_state=self.random_state,
                     verbose=0
                 )
-                logger.info(f"   ✓ Random Forest initialized")
+                logger.info(f"   OK Random Forest initialized")
             
             elif model_name == "extra_trees":
                 params = self.model_params.get("extra_trees", {})
@@ -252,7 +252,7 @@ class ModelTrainer:
                     random_state=self.random_state,
                     verbose=0
                 )
-                logger.info(f"   ✓ Extra Trees initialized")
+                logger.info(f"   OK Extra Trees initialized")
             
             elif model_name == "xgboost":
                 params = self.model_params.get("xgboost", {})
@@ -269,7 +269,7 @@ class ModelTrainer:
                     random_state=self.random_state,
                     verbosity=0
                 )
-                logger.info(f"   ✓ XGBoost initialized")
+                logger.info(f"   OK XGBoost initialized")
             
             elif model_name == "catboost":
                 params = self.model_params.get("catboost", {})
@@ -282,7 +282,7 @@ class ModelTrainer:
                     verbose=0,
                     thread_count=self.n_jobs
                 )
-                logger.info(f"   ✓ CatBoost initialized")
+                logger.info(f"   OK CatBoost initialized")
         
         return models
     
@@ -358,18 +358,18 @@ class ModelTrainer:
         if model_name == "xgboost":
             model_file = self.output_dir / "xgboost.json"
             model.save_model(str(model_file))
-            logger.info(f"   ✓ Saved: xgboost.json")
+            logger.info(f"   OK Saved: xgboost.json")
         
         elif model_name == "catboost":
             model_file = self.output_dir / "catboost.cbm"
             model.save_model(str(model_file))
-            logger.info(f"   ✓ Saved: catboost.cbm")
+            logger.info(f"   OK Saved: catboost.cbm")
         
         else:
             # Sklearn models - use joblib
             model_file = self.output_dir / f"{model_name}.pkl"
             joblib.dump(model, model_file)
-            logger.info(f"   ✓ Saved: {model_name}.pkl")
+            logger.info(f"   OK Saved: {model_name}.pkl")
         
         # Save feature names (once)
         features_file = self.output_dir / "features.txt"
@@ -377,7 +377,7 @@ class ModelTrainer:
             with open(features_file, 'w') as f:
                 for feat in feature_names:
                     f.write(f"{feat}\n")
-            logger.info(f"   ✓ Saved: features.txt")
+            logger.info(f"   OK Saved: features.txt")
     
     def _compare_models(self, results: Dict) -> Tuple[str, pd.DataFrame]:
         """
@@ -427,7 +427,7 @@ class ModelTrainer:
         # Save comparison table
         comparison_file = self.output_dir / "model_comparison.csv"
         comparison_df.to_csv(comparison_file, index=True)
-        logger.info(f"   ✓ Saved: model_comparison.csv")
+        logger.info(f"   OK Saved: model_comparison.csv")
         
         # Save detailed results
         detailed_results = {}
@@ -442,7 +442,7 @@ class ModelTrainer:
         detailed_file = self.output_dir / "detailed_results.json"
         with open(detailed_file, 'w') as f:
             json.dump(detailed_results, f, indent=2)
-        logger.info(f"   ✓ Saved: detailed_results.json")
+        logger.info(f"   OK Saved: detailed_results.json")
     
     def _generate_metrics(self, results: Dict, best_model_name: str, feature_names: list) -> Dict:
         """Generate training metrics"""

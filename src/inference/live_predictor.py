@@ -175,77 +175,92 @@ class LivePredictor:
         records = []
         
         for i in range(n_hours):
-            dt = pd.to_datetime(weather_hourly['time'][i])
+            try:
+                dt = pd.to_datetime(weather_hourly['time'][i])
+                
+                def get_val(data, key, idx, default):
+                    """Safely get value from data dict"""
+                    try:
+                        if key not in data:
+                            return default
+                        values = data[key]
+                        if not values or idx >= len(values):
+                            return default
+                        val = values[idx]
+                        return val if val is not None else default
+                    except (IndexError, KeyError, TypeError):
+                        return default
+                
+                # Weather features (with safe defaults)
+                humidity = get_val(weather_hourly, 'relative_humidity_2m', i, 60)
+                dew_point = get_val(weather_hourly, 'dew_point_2m', i, 15)
+                wind_gusts = get_val(weather_hourly, 'wind_gusts_10m', i, 20)
+                precipitation = get_val(weather_hourly, 'precipitation', i, 0)
+                pressure = get_val(weather_hourly, 'pressure_msl', i, 1013)
+                cloud_cover = get_val(weather_hourly, 'cloud_cover', i, 30)
+                
+                # AQ features (with safe defaults)
+                pm25 = get_val(aq_hourly, 'pm2_5', i, 50)
+                pm10 = get_val(aq_hourly, 'pm10', i, 80)
+                co = get_val(aq_hourly, 'carbon_monoxide', i, 500)
+                no2 = get_val(aq_hourly, 'nitrogen_dioxide', i, 30)
+                so2 = get_val(aq_hourly, 'sulphur_dioxide', i, 10)
+                o3 = get_val(aq_hourly, 'ozone', i, 50)
+                dust = get_val(aq_hourly, 'dust', i, 10)
+                aod = get_val(aq_hourly, 'aerosol_optical_depth', i, 0.3)
+                
+                # Derived features
+                is_raining = 1 if precipitation > 0 else 0
+                heavy_rain = 1 if precipitation > 7.5 else 0
+                is_weekend = 1 if dt.dayofweek >= 5 else 0
+                
+                # Create feature dict
+                features = {
+                    'o3_ugm3': o3,
+                    'pressure_msl_hpa': pressure,
+                    'heavy_rain': heavy_rain,
+                    'co_ugm3': co,
+                    'latitude': city_info['lat'],
+                    'humidity_percent': humidity,
+                    'city_encoded': self.city_encoding.get(city_name, 0),
+                    'so2_ugm3': so2,
+                    'precipitation_mm': precipitation,
+                    'dust_ugm3': dust,
+                    'pm2_5_ugm3': pm25,
+                    'wind_gusts_kmh': wind_gusts,
+                    'aod': aod,
+                    'state_encoded': self.state_encoding.get(city_info['state'], 0),
+                    'pm10_ugm3': pm10,
+                    'longitude': city_info['lon'],
+                    'is_raining': is_raining,
+                    'cloud_cover_percent': cloud_cover,
+                    'is_weekend': is_weekend,
+                    'dew_point_c': dew_point,
+                    'no2_ugm3': no2,
+                    'month': dt.month
+                }
+                
+                # Predict
+                predicted_aqi, aqi_category, aqi_emoji = self.predict(features)
+                
+                # Add to records
+                record = {
+                    'datetime': dt,
+                    'hour': dt.hour,
+                    'predicted_aqi': predicted_aqi,
+                    'aqi_category': aqi_category,
+                    'aqi_emoji': aqi_emoji
+                }
+                
+                records.append(record)
             
-            def get_val(data, key, idx, default):
-                try:
-                    val = data.get(key, [default] * n_hours)[idx]
-                    return val if val is not None else default
-                except:
-                    return default
-            
-            # Weather features
-            humidity = get_val(weather_hourly, 'relative_humidity_2m', i, 60)
-            dew_point = get_val(weather_hourly, 'dew_point_2m', i, 15)
-            wind_gusts = get_val(weather_hourly, 'wind_gusts_10m', i, 20)
-            precipitation = get_val(weather_hourly, 'precipitation', i, 0)
-            pressure = get_val(weather_hourly, 'pressure_msl', i, 1013)
-            cloud_cover = get_val(weather_hourly, 'cloud_cover', i, 30)
-            
-            # AQ features
-            pm25 = get_val(aq_hourly, 'pm2_5', i, 50)
-            pm10 = get_val(aq_hourly, 'pm10', i, 80)
-            co = get_val(aq_hourly, 'carbon_monoxide', i, 500)
-            no2 = get_val(aq_hourly, 'nitrogen_dioxide', i, 30)
-            so2 = get_val(aq_hourly, 'sulphur_dioxide', i, 10)
-            o3 = get_val(aq_hourly, 'ozone', i, 50)
-            dust = get_val(aq_hourly, 'dust', i, 10)
-            aod = get_val(aq_hourly, 'aerosol_optical_depth', i, 0.3)
-            
-            # Derived features
-            is_raining = 1 if precipitation > 0 else 0
-            heavy_rain = 1 if precipitation > 7.5 else 0
-            is_weekend = 1 if dt.dayofweek >= 5 else 0
-            
-            # Create feature dict
-            features = {
-                'o3_ugm3': o3,
-                'pressure_msl_hpa': pressure,
-                'heavy_rain': heavy_rain,
-                'co_ugm3': co,
-                'latitude': city_info['lat'],
-                'humidity_percent': humidity,
-                'city_encoded': self.city_encoding.get(city_name, 0),
-                'so2_ugm3': so2,
-                'precipitation_mm': precipitation,
-                'dust_ugm3': dust,
-                'pm2_5_ugm3': pm25,
-                'wind_gusts_kmh': wind_gusts,
-                'aod': aod,
-                'state_encoded': self.state_encoding.get(city_info['state'], 0),
-                'pm10_ugm3': pm10,
-                'longitude': city_info['lon'],
-                'is_raining': is_raining,
-                'cloud_cover_percent': cloud_cover,
-                'is_weekend': is_weekend,
-                'dew_point_c': dew_point,
-                'no2_ugm3': no2,
-                'month': dt.month
-            }
-            
-            # Predict
-            predicted_aqi, aqi_category, aqi_emoji = self.predict(features)
-            
-            # Add to records
-            record = {
-                'datetime': dt,
-                'hour': dt.hour,
-                'predicted_aqi': predicted_aqi,
-                'aqi_category': aqi_category,
-                'aqi_emoji': aqi_emoji
-            }
-            
-            records.append(record)
+            except Exception as e:
+                logger.warning(f"Skipping hour {i} due to error: {e}")
+                continue
+        
+        if not records:
+            logger.error("No valid forecast records generated")
+            return None
         
         df = pd.DataFrame(records)
         

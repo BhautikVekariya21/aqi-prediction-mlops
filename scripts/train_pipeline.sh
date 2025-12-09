@@ -10,6 +10,17 @@ echo "========================================"
 echo "Running Full DVC Pipeline"
 echo "========================================"
 
+# Get script directory and project root
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
+
+# Change to project root
+cd "$PROJECT_ROOT"
+
+echo ""
+echo "Project root: $PROJECT_ROOT"
+echo ""
+
 # Check if DVC is initialized
 if [ ! -d ".dvc" ]; then
     echo "ERROR: DVC not initialized!"
@@ -24,12 +35,11 @@ if [ ! -f .env ]; then
     exit 1
 fi
 
-# Load environment variables
-source .env
+# Unset PYTHONPATH to avoid conflicts
+unset PYTHONPATH
 
-echo ""
 echo "Pipeline Configuration:"
-echo "  Start Date: $(grep 'start_date' configs/params.yaml | awk '{print $2}')"
+echo "  Start Date: $(grep 'start_date' configs/params.yaml | awk '{print $2}' || echo 'Not set')"
 echo "  Target: us_aqi"
 echo "  Models: Decision Tree, Random Forest, Extra Trees, XGBoost, CatBoost"
 echo ""
@@ -44,7 +54,12 @@ echo "Running DVC pipeline..."
 echo "This may take several hours for first run..."
 echo ""
 
-dvc repro
+# Run with clean environment
+env -i \
+  HOME="$HOME" \
+  PATH="$PATH" \
+  USER="$USER" \
+  dvc repro
 
 # Check if pipeline completed successfully
 if [ $? -eq 0 ]; then

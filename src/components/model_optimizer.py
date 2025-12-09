@@ -60,7 +60,7 @@ class ModelOptimizer:
         
         # Optuna settings
         self.optuna_config = opt_config.get("optuna", {})
-        self.n_trials = self.optuna_config.get("n_trials", 100)
+        self.n_trials = self.optuna_config.get("n_trials", 20)
         self.timeout = self.optuna_config.get("timeout", 3600)
         self.study_name = self.optuna_config.get("study_name", "xgboost_optimization")
         
@@ -140,12 +140,12 @@ class ModelOptimizer:
         metrics_file = self.output_dir / "optimization_metrics.json"
         with open(metrics_file, 'w') as f:
             json.dump(metrics, f, indent=2)
-        logger.info(f"   ✓ Metrics saved: {metrics_file}")
+        logger.info(f"   OK Metrics saved: {metrics_file}")
         
         # Print summary
         self._print_summary(baseline_metrics, optimized_metrics, model_files)
         
-        logger.info(f"\n✓ Model optimization complete!")
+        logger.info(f"\nOK Model optimization complete!")
         
         # Return primary model file (PKL for Railway)
         return str(model_files['pkl'])
@@ -269,7 +269,7 @@ class ModelOptimizer:
                 show_progress_bar=False
             )
             
-            logger.info(f"   ✓ Optuna completed")
+            logger.info(f"   OK Optuna completed")
             logger.info(f"   Best R²: {study.best_value:.4f}")
             logger.info(f"   Best params: {study.best_params}")
             
@@ -315,7 +315,7 @@ class ModelOptimizer:
             verbose=False
         )
         
-        logger.info(f"   ✓ Training complete")
+        logger.info(f"   OK Training complete")
         
         return model
     
@@ -335,10 +335,10 @@ class ModelOptimizer:
         r2_degradation = baseline_metrics['r2_score'] - optimized_metrics['r2_score']
         
         if r2_degradation > self.max_performance_degradation:
-            logger.warning(f"   ⚠️  Performance degraded by {r2_degradation:.4f}")
+            logger.warning(f"   Warning  Performance degraded by {r2_degradation:.4f}")
             logger.warning(f"   Max allowed: {self.max_performance_degradation}")
         else:
-            logger.info(f"   ✓ Performance verified (degradation: {r2_degradation:.4f})")
+            logger.info(f"   OK Performance verified (degradation: {r2_degradation:.4f})")
     
     def _compress_model(self, model: xgb.XGBRegressor, feature_names: list) -> Dict[str, Path]:
         """
@@ -352,7 +352,7 @@ class ModelOptimizer:
             joblib.dump(model, pkl_file, compress=('gzip', self.compression_level))
             pkl_size = pkl_file.stat().st_size / (1024 * 1024)
             
-            logger.info(f"   ✓ PKL (gzip): {pkl_size:.2f} MB")
+            logger.info(f"   OK PKL (gzip): {pkl_size:.2f} MB")
             model_files['pkl'] = pkl_file
         
         # 2. Save as JSON.GZ (ultra-compressed, backup)
@@ -370,7 +370,7 @@ class ModelOptimizer:
             json_file.unlink()
             
             gzip_size = gzip_file.stat().st_size / (1024 * 1024)
-            logger.info(f"   ✓ JSON.GZ: {gzip_size:.2f} MB")
+            logger.info(f"   OK JSON.GZ: {gzip_size:.2f} MB")
             model_files['gzip'] = gzip_file
         
         # 3. Save features
@@ -379,7 +379,7 @@ class ModelOptimizer:
             for feat in feature_names:
                 f.write(f"{feat}\n")
         
-        logger.info(f"   ✓ Features saved")
+        logger.info(f"   OK Features saved")
         model_files['features'] = features_file
         
         return model_files
@@ -411,7 +411,7 @@ class ModelOptimizer:
         with open(metadata_file, 'w') as f:
             json.dump(metadata, f, indent=2)
         
-        logger.info(f"   ✓ Metadata saved: {metadata_file}")
+        logger.info(f"   OK Metadata saved: {metadata_file}")
         
         return metadata
     

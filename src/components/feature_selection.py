@@ -142,14 +142,14 @@ class FeatureSelection:
         # Save selected features dataset
         output_file = self.output_dir / "aqi_selected_features.parquet"
         df_selected.to_parquet(output_file, index=False)
-        logger.info(f"   ✓ Selected features dataset saved: {output_file}")
+        logger.info(f"   OK Selected features dataset saved: {output_file}")
         
         # Save feature names
         features_file = self.output_dir / "selected_features.txt"
         with open(features_file, 'w') as f:
             for feat in final_features:
                 f.write(f"{feat}\n")
-        logger.info(f"   ✓ Feature names saved: {features_file}")
+        logger.info(f"   OK Feature names saved: {features_file}")
         
         # Save all importances
         self._save_importances(all_importances, combined_df)
@@ -161,7 +161,7 @@ class FeatureSelection:
         metrics_file = self.output_dir / "selection_metrics.json"
         with open(metrics_file, 'w') as f:
             json.dump(metrics, f, indent=2)
-        logger.info(f"   ✓ Metrics saved: {metrics_file}")
+        logger.info(f"   OK Metrics saved: {metrics_file}")
         
         # Print summary
         self._print_summary(df, df_selected, final_features, combined_df)
@@ -195,7 +195,7 @@ class FeatureSelection:
         logger.info(f"\n   Excluded columns (prevent data leakage):")
         for col in self.exclude_columns:
             if col in df.columns:
-                logger.info(f"     ✗ {col}")
+                logger.info(f"     FAILED {col}")
         
         return feature_cols, categorical_cols
     
@@ -216,7 +216,7 @@ class FeatureSelection:
             # Check if already encoded
             if encoded_col not in df_encoded.columns:
                 df_encoded[encoded_col] = pd.Categorical(df_encoded[cat_col]).codes
-                logger.info(f"   ✓ Encoded {cat_col} → {encoded_col}")
+                logger.info(f"   OK Encoded {cat_col} to {encoded_col}")
             
             # Add to feature list
             if encoded_col not in feature_cols:
@@ -239,7 +239,7 @@ class FeatureSelection:
             'correlation': correlations.values
         }).sort_values('correlation', ascending=False)
         
-        logger.info(f"   ✓ Correlation computed for {len(feature_cols)} features")
+        logger.info(f"   OK Correlation computed for {len(feature_cols)} features")
         logger.info(f"   Top 5: {corr_df.head(5)['feature'].tolist()}")
         
         return corr_df
@@ -252,21 +252,62 @@ class FeatureSelection:
     ) -> pd.DataFrame:
         """
         Method 2: Mutual Information (from notebook)
+        Uses sampling for large datasets to avoid memory issues
         """
-        logger.info(f"   Computing MI for {X.shape[0]:,} samples...")
+        # Sample if dataset is too large (> 500k samples)
+        max_samples = 500000
         
-        mi_scores = mutual_info_regression(
-            X, y,
-            random_state=self.random_state,
-            n_jobs=-1
-        )
+        if X.shape[0] > max_samples:
+            logger.info(f"   Dataset too large ({X.shape[0]:,} samples)")
+            logger.info(f"   Using stratified sample of {max_samples:,} for MI computation...")
+            
+            # Stratified sampling based on target bins
+            from sklearn.model_selection import train_test_split
+            
+            # Create bins for stratification
+            y_bins = pd.cut(y, bins=[0, 50, 100, 150, 200, 300, 500, 1000], labels=False)
+            
+            # Sample
+            try:
+                X_sample, _, y_sample, _ = train_test_split(
+                    X, y,
+                    train_size=max_samples,
+                    stratify=y_bins,
+                    random_state=self.random_state
+                )
+                logger.info(f"   [OK] Sampled {len(X_sample):,} records (stratified)")
+            except:
+                # Fallback: random sampling without stratification
+                indices = np.random.RandomState(self.random_state).choice(
+                    X.shape[0], max_samples, replace=False
+                )
+                X_sample = X[indices]
+                y_sample = y[indices]
+                logger.info(f"   [OK] Sampled {len(X_sample):,} records (random)")
+        else:
+            X_sample = X
+            y_sample = y
+            logger.info(f"   Computing MI for {X.shape[0]:,} samples...")
+        
+        # Compute MI
+        try:
+            mi_scores = mutual_info_regression(
+                X_sample, y_sample,
+                random_state=self.random_state
+            )
+        except MemoryError as e:
+            logger.error(f"   ✗ MI computation failed: {e}")
+            logger.warning(f"   Using correlation as fallback...")
+            # Fallback: use correlation instead
+            mi_scores = np.abs([np.corrcoef(X_sample[:, i], y_sample)[0, 1] 
+                            for i in range(X_sample.shape[1])])
         
         mi_df = pd.DataFrame({
             'feature': feature_cols,
             'mutual_info': mi_scores
         }).sort_values('mutual_info', ascending=False)
         
-        logger.info(f"   ✓ Mutual Information computed")
+        logger.info(f"   [OK] Mutual Information computed")
         logger.info(f"   Top 5: {mi_df.head(5)['feature'].tolist()}")
         
         return mi_df
@@ -295,7 +336,7 @@ class FeatureSelection:
             'dt_importance': dt.feature_importances_
         }).sort_values('dt_importance', ascending=False)
         
-        logger.info(f"   ✓ Decision Tree trained")
+        logger.info(f"   OK Decision Tree trained")
         logger.info(f"   Top 5: {dt_df.head(5)['feature'].tolist()}")
         
         return dt_df
@@ -331,7 +372,7 @@ class FeatureSelection:
             'lgb_importance': lgb_model.feature_importance(importance_type='gain')
         }).sort_values('lgb_importance', ascending=False)
         
-        logger.info(f"   ✓ LightGBM trained")
+        logger.info(f"   OK LightGBM trained")
         logger.info(f"   Top 5: {lgb_df.head(5)['feature'].tolist()}")
         
         return lgb_df
@@ -365,7 +406,7 @@ class FeatureSelection:
             'xgb_importance': xgb_model.feature_importances_
         }).sort_values('xgb_importance', ascending=False)
         
-        logger.info(f"   ✓ XGBoost trained")
+        logger.info(f"   OK XGBoost trained")
         logger.info(f"   Top 5: {xgb_df.head(5)['feature'].tolist()}")
         
         return xgb_df
@@ -416,8 +457,8 @@ class FeatureSelection:
         # Remove duplicates
         final_features = list(set(selected_features))
         
-        logger.info(f"   ✓ Combined rankings from {len(all_importances)} methods")
-        logger.info(f"   ✓ Selected {len(final_features)} final features")
+        logger.info(f"   OK Combined rankings from {len(all_importances)} methods")
+        logger.info(f"   OK Selected {len(final_features)} final features")
         
         return combined_df, final_features
     
@@ -427,12 +468,12 @@ class FeatureSelection:
         for method, importance_df in all_importances.items():
             output_file = self.output_dir / f"importance_{method}.csv"
             importance_df.to_csv(output_file, index=False)
-            logger.info(f"   ✓ Saved {method} importance: {output_file.name}")
+            logger.info(f"   OK Saved {method} importance: {output_file.name}")
         
         # Save combined rankings
         combined_file = self.output_dir / "all_feature_importances.csv"
         combined_df.to_csv(combined_file, index=False)
-        logger.info(f"   ✓ Saved combined importances: {combined_file.name}")
+        logger.info(f"   OK Saved combined importances: {combined_file.name}")
     
     def _generate_metrics(
         self,

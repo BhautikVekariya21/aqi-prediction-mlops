@@ -1,0 +1,528 @@
+schema: '2.0'
+stages:
+  data_ingestion:
+    cmd: python -m src.pipeline.stage_01_data_ingestion
+    deps:
+    - path: configs/cities.yaml
+      hash: md5
+      md5: 5d59962e2084801e50fdf49f84a987b4
+      size: 2288
+    - path: src/components/data_ingestion.py
+      hash: md5
+      md5: f303fed755fe59b4efd472fae3b60797
+      size: 9978
+    - path: src/pipeline/stage_01_data_ingestion.py
+      hash: md5
+      md5: 55002d3cb12a04280c6e6cf7580cabb4
+      size: 3208
+    params:
+      params.yaml:
+        data_ingestion:
+          start_date: '2022-08-05'
+          end_date:
+          api:
+            timeout: 120
+            retry_attempts: 3
+            retry_delay: 5
+            rate_limit_min: 1.0
+            rate_limit_max: 2.0
+          output:
+            raw_dir: data/raw
+            cities_per_batch: 3
+        project.random_state: 42
+    outs:
+    - path: data/raw/aqi_india_raw.parquet
+      hash: md5
+      md5: b287343735d32b7634d0838df6185975
+      size: 21374671
+    - path: data/raw/ingestion_metrics.json
+      hash: md5
+      md5: 0edf5a6350e36c858df6de77e248965f
+      size: 348
+  data_preprocessing:
+    cmd: python -m src.pipeline.stage_02_data_preprocessing
+    deps:
+    - path: data/raw/aqi_india_raw.parquet
+      hash: md5
+      md5: b287343735d32b7634d0838df6185975
+      size: 21374671
+    - path: src/components/data_preprocessing.py
+      hash: md5
+      md5: ff67cb5a81d146b81e43283ebbbf9c10
+      size: 12351
+    - path: src/pipeline/stage_02_data_preprocessing.py
+      hash: md5
+      md5: 2bb530b94b7c94484e4bcbe663490394
+      size: 3477
+    params:
+      params.yaml:
+        data_preprocessing:
+          input_path: data/raw/aqi_india_raw.parquet
+          output_dir: data/processed
+          drop_columns:
+          - eu_aqi
+          - eu_aqi_pm10
+          - eu_aqi_pm25
+          - rain_mm
+          - solar_radiation_wm2
+          - us_aqi_no2
+          - us_aqi_pm10
+          - us_aqi_pm25
+          - week_of_year
+          imputation:
+            method: knn
+            n_neighbors: 5
+            weights: distance
+          outliers:
+            method: winsorize
+            lower_percentile: 0.005
+            upper_percentile: 0.997
+            columns:
+            - pm2_5_ugm3
+            - pm10_ugm3
+            - co_ugm3
+            - no2_ugm3
+            - so2_ugm3
+            - o3_ugm3
+            - dust_ugm3
+            - aod
+            - us_aqi
+            - dew_point_c
+            - wind_gusts_kmh
+        project.random_state: 42
+    outs:
+    - path: data/processed/aqi_india_processed.parquet
+      hash: md5
+      md5: 64a54467d220d1720f09e9dffda936e4
+      size: 21269203
+    - path: data/processed/preprocessing_metrics.json
+      hash: md5
+      md5: 4f61650bd19513654d39cf18d49284df
+      size: 263
+  feature_engineering:
+    cmd: python -m src.pipeline.stage_03_feature_engineering
+    deps:
+    - path: data/processed/aqi_india_processed.parquet
+      hash: md5
+      md5: 64a54467d220d1720f09e9dffda936e4
+      size: 21269203
+    - path: src/components/feature_engineering.py
+      hash: md5
+      md5: 994e57ee8d2e6ce689823973cd5726b5
+      size: 12110
+    - path: src/pipeline/stage_03_feature_engineering.py
+      hash: md5
+      md5: bd587574610c5bee03e04f7072011598
+      size: 3192
+    params:
+      params.yaml:
+        feature_engineering:
+          input_path: data/processed/aqi_india_processed.parquet
+          output_dir: data/features
+          target: us_aqi
+          categorical_columns:
+          - city
+          - state
+          encoding_method: label
+          create_cyclical_features: false
+          create_interaction_features: false
+          create_lag_features: false
+          create_rolling_features: false
+          scaling_method: none
+        project.random_state: 42
+    outs:
+    - path: data/features/aqi_features.parquet
+      hash: md5
+      md5: 4a22b976dea6a56788142ab651fd9490
+      size: 21307000
+    - path: data/features/feature_metrics.json
+      hash: md5
+      md5: a8b83fcba92b1d1afbd561b9843964ee
+      size: 610
+  feature_selection:
+    cmd: python -m src.pipeline.stage_04_feature_selection
+    deps:
+    - path: data/features/aqi_features.parquet
+      hash: md5
+      md5: 4a22b976dea6a56788142ab651fd9490
+      size: 21307000
+    - path: src/components/feature_selection.py
+      hash: md5
+      md5: f6d0c9daf4cb41fff786e0cb6c040f87
+      size: 19988
+    - path: src/pipeline/stage_04_feature_selection.py
+      hash: md5
+      md5: 4271a80da4741562dacfbd3cb1eeb79b
+      size: 3381
+    params:
+      params.yaml:
+        feature_selection:
+          input_path: data/features/aqi_features.parquet
+          output_dir: data/features/selection
+          target: us_aqi
+          top_n_features: 30
+          exclude_columns:
+          - us_aqi
+          - datetime
+          - day_name
+          - season
+          - time_of_day
+          - aqi_category
+          - pm25_category_india
+          - festival_period
+          - crop_burning_season
+          must_have_features:
+          - latitude
+          - longitude
+          - month
+          - city_encoded
+          - state_encoded
+          - is_weekend
+          methods:
+            correlation: true
+            mutual_info: true
+            decision_tree: true
+            lightgbm: true
+            xgboost: true
+        project.random_state: 42
+    outs:
+    - path: data/features/selection/aqi_selected_features.parquet
+      hash: md5
+      md5: 9e9bc7430298b2fe96d6bfa238085e59
+      size: 20048882
+    - path: data/features/selection/selected_features.txt
+      hash: md5
+      md5: 4c3e1d261c351356f761de2c59f69d22
+      size: 403
+    - path: data/features/selection/selection_metrics.json
+      hash: md5
+      md5: 57841b08fd58aab80d881184f6974557
+      size: 1075
+  data_splitting:
+    cmd: python -m src.pipeline.stage_05_data_splitting
+    deps:
+    - path: data/features/selection/aqi_selected_features.parquet
+      hash: md5
+      md5: 9e9bc7430298b2fe96d6bfa238085e59
+      size: 20048882
+    - path: data/features/selection/selected_features.txt
+      hash: md5
+      md5: 4c3e1d261c351356f761de2c59f69d22
+      size: 403
+    - path: src/components/data_splitting.py
+      hash: md5
+      md5: e0ce8115c1b8be8fa8b4fbd039fc7e50
+      size: 15936
+    - path: src/pipeline/stage_05_data_splitting.py
+      hash: md5
+      md5: 67e9d9ce9e83fdbf62ef8092a735b51e
+      size: 3784
+    params:
+      params.yaml:
+        data_splitting:
+          input_path: data/features/selection/aqi_selected_features.parquet
+          output_dir: data/splits
+          test_size: 0.15
+          validation_size: 0.15
+          stratify: true
+          stratify_bins:
+          - 0
+          - 50
+          - 100
+          - 150
+          - 200
+          - 300
+          - 500
+          - 1000
+        project.random_state: 42
+    outs:
+    - path: data/splits/feature_names.txt
+      hash: md5
+      md5: 4c3e1d261c351356f761de2c59f69d22
+      size: 403
+    - path: data/splits/split_metrics.json
+      hash: md5
+      md5: fc89b13e2ce7a5390db06d2ad64ceeb0
+      size: 767
+    - path: data/splits/test.parquet
+      hash: md5
+      md5: 63654490733a89f4a5feae7ee8a948bd
+      size: 4369071
+    - path: data/splits/train.parquet
+      hash: md5
+      md5: c78d898d77ca17644ed87be3dcfeb843
+      size: 19428613
+    - path: data/splits/validation.parquet
+      hash: md5
+      md5: 24efba6df4cf476a847d80eaf2430511
+      size: 4367196
+  model_training:
+    cmd: python -m src.pipeline.stage_06_model_training
+    deps:
+    - path: data/splits/feature_names.txt
+      hash: md5
+      md5: 4c3e1d261c351356f761de2c59f69d22
+      size: 403
+    - path: data/splits/test.parquet
+      hash: md5
+      md5: 63654490733a89f4a5feae7ee8a948bd
+      size: 4369071
+    - path: data/splits/train.parquet
+      hash: md5
+      md5: c78d898d77ca17644ed87be3dcfeb843
+      size: 19428613
+    - path: data/splits/validation.parquet
+      hash: md5
+      md5: 24efba6df4cf476a847d80eaf2430511
+      size: 4367196
+    - path: src/components/model_trainer.py
+      hash: md5
+      md5: c476c3ca4212a7937a6efc812617a0e8
+      size: 19660
+    - path: src/pipeline/stage_06_model_training.py
+      hash: md5
+      md5: 385160db6a769d219a81159e17ffb166
+      size: 4085
+    params:
+      params.yaml:
+        model_params:
+          decision_tree:
+            max_depth: 15
+            min_samples_split: 20
+            min_samples_leaf: 10
+          random_forest:
+            n_estimators: 100
+            max_depth: 15
+            min_samples_split: 10
+            min_samples_leaf: 5
+            max_features: sqrt
+            n_jobs: 4
+          extra_trees:
+            n_estimators: 100
+            max_depth: 15
+            min_samples_split: 10
+            min_samples_leaf: 5
+            max_features: sqrt
+            n_jobs: 4
+          xgboost:
+            n_estimators: 500
+            max_depth: 8
+            learning_rate: 0.05
+            subsample: 0.8
+            colsample_bytree: 0.8
+            reg_alpha: 0.1
+            reg_lambda: 0.1
+            tree_method: hist
+            n_jobs: 4
+          catboost:
+            iterations: 500
+            depth: 8
+            learning_rate: 0.05
+            l2_leaf_reg: 3
+            thread_count: 4
+        model_training:
+          splits_dir: data/splits
+          output_dir: models
+          target: us_aqi
+          models:
+          - decision_tree
+          - random_forest
+          - extra_trees
+          - xgboost
+          - catboost
+          primary_metric: r2_score
+          early_stopping_rounds: 50
+          use_float32: true
+          n_jobs: 4
+          generate_plots: true
+          sample_size_for_plots: 5000
+        project.random_state: 42
+    outs:
+    - path: models/features.txt
+      hash: md5
+      md5: 4c3e1d261c351356f761de2c59f69d22
+      size: 403
+    - path: models/training_metrics.json
+      hash: md5
+      md5: a00c4ff991a881413762b3eac43fe74d
+      size: 1324
+    - path: models/xgboost.json
+      hash: md5
+      md5: 404fdb8f0216d78d016ef78dc9a060f1
+      size: 12069831
+  model_optimization:
+    cmd: python -m src.pipeline.stage_07_model_optimization
+    deps:
+    - path: data/splits/feature_names.txt
+      hash: md5
+      md5: 4c3e1d261c351356f761de2c59f69d22
+      size: 403
+    - path: data/splits/test.parquet
+      hash: md5
+      md5: 63654490733a89f4a5feae7ee8a948bd
+      size: 4369071
+    - path: data/splits/train.parquet
+      hash: md5
+      md5: c78d898d77ca17644ed87be3dcfeb843
+      size: 19428613
+    - path: data/splits/validation.parquet
+      hash: md5
+      md5: 24efba6df4cf476a847d80eaf2430511
+      size: 4367196
+    - path: models/xgboost.json
+      hash: md5
+      md5: 404fdb8f0216d78d016ef78dc9a060f1
+      size: 12069831
+    - path: src/components/model_optimizer.py
+      hash: md5
+      md5: 7400b36a0ddadbda469dc760c212701a
+      size: 18399
+    - path: src/pipeline/stage_07_model_optimization.py
+      hash: md5
+      md5: 6a13fa864a38c61e1cfdc4352d51e6d5
+      size: 4324
+    params:
+      params.yaml:
+        model_optimization:
+          models_dir: models
+          output_dir: models/optimized
+          splits_dir: data/splits
+          target_size_mb: 25.0
+          compression_method: gzip
+          compression_level: 9
+          enable_precision_reduction: true
+          precision: 3
+          enable_retraining: true
+          output_formats:
+          - pkl
+          - gzip
+          optuna:
+            n_trials: 100
+            timeout: 3600
+            n_jobs: 4
+            study_name: xgboost_optimization
+            direction: maximize
+            search_space:
+              max_depth:
+              - 6
+              - 15
+              learning_rate:
+              - 0.01
+              - 0.2
+              subsample:
+              - 0.7
+              - 0.95
+              colsample_bytree:
+              - 0.7
+              - 0.95
+              colsample_bylevel:
+              - 0.7
+              - 0.95
+              reg_alpha:
+              - 1e-05
+              - 0.1
+              reg_lambda:
+              - 1e-05
+              - 0.1
+              min_child_weight:
+              - 1
+              - 10
+              gamma:
+              - 0
+              - 1.0
+              max_bin:
+              - 128
+              - 256
+          xgboost_optimized:
+            objective: reg:squarederror
+            max_depth: 10
+            learning_rate: 0.08
+            subsample: 0.85
+            colsample_bytree: 0.95
+            colsample_bylevel: 0.75
+            reg_alpha: 0.0001
+            reg_lambda: 1e-05
+            min_child_weight: 7
+            gamma: 0.5
+            max_bin: 128
+            tree_method: hist
+          xgboost_training:
+            num_boost_round: 600
+            early_stopping_rounds: 50
+            verbose_eval: 50
+          max_performance_degradation: 0.02
+        project.random_state: 42
+    outs:
+    - path: models/optimized/features.txt
+      hash: md5
+      md5: 4c3e1d261c351356f761de2c59f69d22
+      size: 403
+    - path: models/optimized/model.json.gz
+      hash: md5
+      md5: 61d167342f2fb437d935889df970ed2c
+      size: 72120345
+    - path: models/optimized/model_final.pkl
+      hash: md5
+      md5: 396b7b471c094567c6c1e22a9420b75f
+      size: 62484550
+    - path: models/optimized/model_metadata.json
+      hash: md5
+      md5: 185eab89f1d5ed0e6872aef4ca5e5183
+      size: 1570
+    - path: models/optimized/optimization_metrics.json
+      hash: md5
+      md5: 5ade1a72b4b936ac316238e79e3a3c23
+      size: 1333
+  model_evaluation:
+    cmd: python -m src.pipeline.stage_08_model_evaluation
+    deps:
+    - path: data/splits/test.parquet
+      hash: md5
+      md5: 63654490733a89f4a5feae7ee8a948bd
+      size: 4369071
+    - path: models/optimized/features.txt
+      hash: md5
+      md5: 4c3e1d261c351356f761de2c59f69d22
+      size: 403
+    - path: models/optimized/model_final.pkl
+      hash: md5
+      md5: 396b7b471c094567c6c1e22a9420b75f
+      size: 62484550
+    - path: src/components/model_evaluator.py
+      hash: md5
+      md5: 758295f4555c96937a2166fbdfbc73d7
+      size: 18127
+    - path: src/pipeline/stage_08_model_evaluation.py
+      hash: md5
+      md5: 7260703b85db35f9090e26878a38a4cf
+      size: 3506
+    params:
+      params.yaml:
+        model_evaluation:
+          model_path: models/optimized/model_final.pkl
+          model_gzip_path: models/optimized/model.json.gz
+          test_data_path: data/splits/test.parquet
+          output_dir: models/evaluation
+          metrics:
+          - rmse
+          - mae
+          - r2_score
+          - mape
+          - within_5_pct
+          - within_10_pct
+          - within_25_pct
+          - within_50_pct
+          acceptance_thresholds:
+            r2_score_min: 0.9
+            rmse_max: 15.0
+            mae_max: 10.0
+            within_25_pct_min: 90.0
+    outs:
+    - path: models/evaluation/evaluation_report.json
+      hash: md5
+      md5: 6395a7836f0541728596e6ea918c0a1e
+      size: 11733
+    - path: models/evaluation/final_metrics.json
+      hash: md5
+      md5: 72c469245e56b5cd348312bb5886af3b
+      size: 310

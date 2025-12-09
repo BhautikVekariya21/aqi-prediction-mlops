@@ -1,330 +1,405 @@
 """
-FastAPI application for AQI prediction
-Main entry point for the REST API
+AQI Prediction API - Railway Deployment
+Version: 1.2.0 (Smart Calibration + Physics Floor)
 """
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import Optional, List, Dict
 from datetime import datetime
-import sys
 from pathlib import Path
-
-# Add project root to path
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
-
-from src.api.models import (
-    HealthResponse,
-    PredictionRequest,
-    PredictionResponse,
-    ForecastRequest,
-    ForecastResponse,
-    ErrorResponse
-)
-from src.api.dependencies import get_model_loader, get_city_info
-from src.inference.live_predictor import LivePredictor
-from src.utils.logger import get_logger
-
-
-logger = get_logger(__name__)
-
+import numpy as np
+import pandas as pd
+import xgboost as xgb
+import requests
+import gzip
+import tempfile
+import os
+import joblib
 
 # =============================================================================
-# FASTAPI APP INITIALIZATION
+# CONFIGURATION
 # =============================================================================
 
-app = FastAPI(
-    title="AQI Prediction API",
-    description="Production-grade Air Quality Index prediction for Indian cities",
-    version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
-)
+MODEL_DIR = Path("models/optimized")
+API_VERSION = "1.2.0"
 
-# CORS middleware
+print("🚀 Starting AQI Prediction API...")
+print("=" * 70)
+
+# =============================================================================
+# LOAD MODEL (GZIP COMPRESSED or PKL)
+# =============================================================================
+
+print("📦 Loading model...")
+model = None
+feature_names = None
+
+try:
+    # Option 1: Try PKL (Preferred)
+    pkl_path = MODEL_DIR / "model_final.pkl"
+    if pkl_path.exists():
+        model = joblib.load(pkl_path)
+        print("✓ Model loaded from PKL")
+    else:
+        # Option 2: Try GZIP (Legacy)
+        gzip_path = MODEL_DIR / "model.json.gz"
+        if gzip_path.exists():
+            with gzip.open(gzip_path, 'rb') as f:
+                model_bytes = f.read()
+            
+            with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as tmp:
+                tmp.write(model_bytes)
+                tmp_path = tmp.name
+            
+            model = xgb.Booster()
+            model.load_model(tmp_path)
+            os.unlink(tmp_path)
+            print("✓ Model loaded from GZIP")
+        else:
+            raise FileNotFoundError("No model file found (checked .pkl and .json.gz)")
+    
+    # Load feature names
+    features_path = MODEL_DIR / "features.txt"
+    if features_path.exists():
+        with open(features_path, 'r') as f:
+            feature_names = [line.strip() for line in f.readlines()]
+        print(f"✓ Features loaded: {len(feature_names)} features")
+    else:
+        print("⚠️ features.txt not found. Assuming standard feature set.")
+
+except Exception as e:
+    print(f"❌ Error loading model: {e}")
+    raise
+
+# =============================================================================
+# CITY DATA
+# =============================================================================
+
+CITIES = {
+    "Agartala": {"lat": 23.8315, "lon": 91.2868, "state": "Tripura"},
+    "Ahmedabad": {"lat": 23.0225, "lon": 72.5714, "state": "Gujarat"},
+    "Aizawl": {"lat": 23.7271, "lon": 92.7176, "state": "Mizoram"},
+    "Bengaluru": {"lat": 12.9716, "lon": 77.5946, "state": "Karnataka"},
+    "Bhopal": {"lat": 23.2599, "lon": 77.4126, "state": "Madhya Pradesh"},
+    "Bhubaneswar": {"lat": 20.2961, "lon": 85.8245, "state": "Odisha"},
+    "Chandigarh": {"lat": 30.7333, "lon": 76.7794, "state": "Punjab"},
+    "Chennai": {"lat": 13.0827, "lon": 80.2707, "state": "Tamil Nadu"},
+    "Dehradun": {"lat": 30.3165, "lon": 78.0322, "state": "Uttarakhand"},
+    "Delhi": {"lat": 28.6139, "lon": 77.2090, "state": "Delhi"},
+    "Gangtok": {"lat": 27.3389, "lon": 88.6065, "state": "Sikkim"},
+    "Gurugram": {"lat": 28.4595, "lon": 77.0266, "state": "Haryana"},
+    "Guwahati": {"lat": 26.1445, "lon": 91.7362, "state": "Assam"},
+    "Hyderabad": {"lat": 17.3850, "lon": 78.4867, "state": "Telangana"},
+    "Imphal": {"lat": 24.8170, "lon": 93.9368, "state": "Manipur"},
+    "Itanagar": {"lat": 27.0844, "lon": 93.6053, "state": "Arunachal Pradesh"},
+    "Jaipur": {"lat": 26.9124, "lon": 75.7873, "state": "Rajasthan"},
+    "Kohima": {"lat": 25.6751, "lon": 94.1086, "state": "Nagaland"},
+    "Kolkata": {"lat": 22.5726, "lon": 88.3639, "state": "West Bengal"},
+    "Lucknow": {"lat": 26.8467, "lon": 80.9462, "state": "Uttar Pradesh"},
+    "Mumbai": {"lat": 19.0760, "lon": 72.8777, "state": "Maharashtra"},
+    "Panaji": {"lat": 15.4909, "lon": 73.8278, "state": "Goa"},
+    "Patna": {"lat": 25.5941, "lon": 85.1376, "state": "Bihar"},
+    "Raipur": {"lat": 21.2514, "lon": 81.6296, "state": "Chhattisgarh"},
+    "Ranchi": {"lat": 23.3441, "lon": 85.3096, "state": "Jharkhand"},
+    "Shillong": {"lat": 25.5788, "lon": 91.8933, "state": "Meghalaya"},
+    "Shimla": {"lat": 31.1048, "lon": 77.1734, "state": "Himachal Pradesh"},
+    "Thiruvananthapuram": {"lat": 8.5241, "lon": 76.9366, "state": "Kerala"},
+    "Visakhapatnam": {"lat": 17.6868, "lon": 83.2185, "state": "Andhra Pradesh"},
+}
+
+CITY_ENC = {c: i for i, c in enumerate(sorted(CITIES.keys()))}
+STATES = sorted(set(v['state'] for v in CITIES.values()))
+STATE_ENC = {s: i for i, s in enumerate(STATES)}
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def aqi_category(aqi: float) -> Dict:
+    """Categorize AQI value based on US EPA standards (modified for Indian Context)"""
+    if aqi <= 50: return {"cat": "Good", "emoji": "🟢", "color": "#00e400"}
+    elif aqi <= 100: return {"cat": "Moderate", "emoji": "🟡", "color": "#ffff00"}
+    elif aqi <= 150: return {"cat": "Unhealthy for Sensitive", "emoji": "🟠", "color": "#ff7e00"}
+    elif aqi <= 200: return {"cat": "Unhealthy", "emoji": "🔴", "color": "#ff0000"}
+    elif aqi <= 300: return {"cat": "Very Unhealthy", "emoji": "🟣", "color": "#8f3f97"}
+    else: return {"cat": "Hazardous", "emoji": "🟤", "color": "#7e0023"}
+
+def calculate_physics_min_aqi(pm2_5: float, pm10: float) -> float:
+    """
+    Theoretical minimum AQI based on PM concentrations.
+    This acts as a 'Physics Floor' to save the model during 700+ AQI events.
+    """
+    # Extended breakpoints for Hazardous levels
+    if pm2_5 > 500: return 500 + (pm2_5 - 500) * 0.8  # Extreme Hazardous (Firecracker event)
+    elif pm2_5 > 350: return 400 + (pm2_5 - 350) * 0.8 # Severe+
+    elif pm2_5 > 250: return 300 + (pm2_5 - 250) * 0.9 # Hazardous
+    elif pm2_5 > 150: return 200 + (pm2_5 - 150) * 1.0 # Very Unhealthy
+    elif pm2_5 > 55:  return 150 + (pm2_5 - 55) * 1.0  # Unhealthy
+    
+    # PM10 Check (Fallback)
+    if pm10 > 430: return 400
+    if pm10 > 350: return 300
+    
+    return 0.0
+
+def fetch_data(lat: float, lon: float, days: int = 2):
+    """Fetch from Open-Meteo"""
+    try:
+        # Weather
+        weather = requests.get("https://api.open-meteo.com/v1/forecast", params={
+            "latitude": lat, "longitude": lon,
+            "hourly": ["relative_humidity_2m", "dew_point_2m", "wind_speed_10m",
+                       "wind_gusts_10m", "wind_direction_10m", "pressure_msl",
+                       "surface_pressure", "cloud_cover", "cloud_cover_low",
+                       "cloud_cover_mid", "cloud_cover_high", "is_day"],
+            "timezone": "Asia/Kolkata", "forecast_days": days
+        }, timeout=30).json()
+        
+        # Air Quality
+        air_quality = requests.get("https://air-quality-api.open-meteo.com/v1/air-quality", params={
+            "latitude": lat, "longitude": lon,
+            "hourly": ["pm2_5", "pm10", "carbon_monoxide", "nitrogen_dioxide",
+                       "sulphur_dioxide", "ozone", "dust", "aerosol_optical_depth"],
+            "timezone": "Asia/Kolkata", "forecast_days": days
+        }, timeout=30).json()
+        
+        return weather, air_quality
+    except Exception as e:
+        print(f"Error fetching data: {e}")
+        return None, None
+
+def safe_get(data_dict, key, index, default, total_length):
+    try:
+        values = data_dict.get(key, [default] * total_length)
+        return values[index] if index < len(values) and values[index] is not None else default
+    except: return default
+
+def prepare_features(weather: Dict, air_quality: Dict, city: str) -> Optional[pd.DataFrame]:
+    city_info = CITIES[city]
+    weather_hourly = weather.get('hourly', {})
+    air_hourly = air_quality.get('hourly', {})
+    n_hours = len(weather_hourly.get('time', []))
+    
+    if n_hours == 0: return None
+    
+    rows = []
+    for i in range(n_hours):
+        try:
+            dt = pd.to_datetime(weather_hourly['time'][i])
+            row = {
+                'year': dt.year, 'month': dt.month, 'day': dt.day, 'hour': dt.hour,
+                'quarter': (dt.month - 1) // 3 + 1, 'week_of_year': dt.isocalendar()[1],
+                'is_weekend': 1 if dt.dayofweek >= 5 else 0,
+                'is_day': safe_get(weather_hourly, 'is_day', i, 1, n_hours),
+                'latitude': city_info['lat'], 'longitude': city_info['lon'],
+                'city_encoded': CITY_ENC.get(city, 0),
+                'state_encoded': STATE_ENC.get(city_info['state'], 0),
+                
+                # Air Quality (Raw - Calibration happens in main loop)
+                'pm2_5': safe_get(air_hourly, 'pm2_5', i, 50, n_hours),
+                'pm10': safe_get(air_hourly, 'pm10', i, 80, n_hours),
+                'ozone': safe_get(air_hourly, 'ozone', i, 50, n_hours),
+                'nitrogen_dioxide': safe_get(air_hourly, 'nitrogen_dioxide', i, 30, n_hours),
+                'sulphur_dioxide': safe_get(air_hourly, 'sulphur_dioxide', i, 10, n_hours),
+                'carbon_monoxide': safe_get(air_hourly, 'carbon_monoxide', i, 500, n_hours),
+                'dust': safe_get(air_hourly, 'dust', i, 10, n_hours),
+                'aerosol_optical_depth': safe_get(air_hourly, 'aerosol_optical_depth', i, 0.3, n_hours),
+                
+                # Weather
+                'relative_humidity_2m': safe_get(weather_hourly, 'relative_humidity_2m', i, 60, n_hours),
+                'dew_point_2m': safe_get(weather_hourly, 'dew_point_2m', i, 15, n_hours),
+                'wind_speed_10m': safe_get(weather_hourly, 'wind_speed_10m', i, 15, n_hours),
+                'wind_gusts_10m': safe_get(weather_hourly, 'wind_gusts_10m', i, 20, n_hours),
+                'wind_direction_10m': safe_get(weather_hourly, 'wind_direction_10m', i, 180, n_hours),
+                'pressure_msl': safe_get(weather_hourly, 'pressure_msl', i, 1013, n_hours),
+                'surface_pressure': safe_get(weather_hourly, 'surface_pressure', i, 1013, n_hours),
+                'cloud_cover': safe_get(weather_hourly, 'cloud_cover', i, 30, n_hours),
+                'cloud_cover_low': safe_get(weather_hourly, 'cloud_cover_low', i, 0, n_hours),
+                'cloud_cover_mid': safe_get(weather_hourly, 'cloud_cover_mid', i, 0, n_hours),
+                'cloud_cover_high': safe_get(weather_hourly, 'cloud_cover_high', i, 0, n_hours),
+                
+                'datetime': dt,
+            }
+            rows.append(row)
+        except Exception: continue
+    
+    return pd.DataFrame(rows) if rows else None
+
+def predict_aqi(df: pd.DataFrame) -> np.ndarray:
+    X = df[feature_names].values.astype(np.float32)
+    X = np.nan_to_num(X, nan=0.0)
+    
+    if hasattr(model, 'predict'): return model.predict(X)
+    else:
+        dmatrix = xgb.DMatrix(X, feature_names=feature_names)
+        return model.predict(dmatrix)
+
+# =============================================================================
+# PYDANTIC MODELS
+# =============================================================================
+
+class HourlyForecast(BaseModel):
+    datetime: str; hour: int; aqi: float; category: str; emoji: str; color: str
+    pm2_5: float; pm10: float; ozone: float; nitrogen_dioxide: float
+    sulphur_dioxide: float; carbon_monoxide: float; relative_humidity_2m: float; wind_speed_10m: float
+
+class DailySummary(BaseModel):
+    date: str; avg_aqi: float; max_aqi: float; min_aqi: float; category: str; emoji: str; color: str
+
+class PredictionResponse(BaseModel):
+    success: bool; city: str; state: str; coordinates: Dict; forecast_days: int
+    generated_at: str; hourly: List[HourlyForecast]; daily: List[DailySummary]; summary: Dict
+
+# =============================================================================
+# MAIN API & ENDPOINTS
+# =============================================================================
+
+app = FastAPI(title="AQI Prediction API", version=API_VERSION)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify allowed origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+@app.get("/")
+def root(): return {"status": "ok", "api": "AQI Prediction API", "version": API_VERSION}
 
-# =============================================================================
-# EXCEPTION HANDLERS
-# =============================================================================
+@app.get("/cities")
+def get_cities(): 
+    return {"total": len(CITIES), "cities": [{"name": c, "state": i["state"], "lat": i["lat"], "lon": i["lon"]} for c, i in sorted(CITIES.items())], "states": STATES}
 
-@app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
-    """Global exception handler"""
-    logger.error(f"Unhandled exception: {exc}")
+@app.get("/predict/{city}", response_model=PredictionResponse)
+def predict_city_aqi(city: str, days: int = 2):
+    # 1. Validation
+    if city not in CITIES: raise HTTPException(status_code=400, detail="City not found")
+    days = max(1, min(5, days))
+    city_info = CITIES[city]
     
-    return JSONResponse(
-        status_code=500,
-        content=ErrorResponse(
-            error="Internal Server Error",
-            detail=str(exc),
-            timestamp=datetime.now().isoformat()
-        ).dict()
-    )
+    # 2. Fetch Data
+    weather, air_quality = fetch_data(city_info['lat'], city_info['lon'], days)
+    if not weather or not air_quality: raise HTTPException(status_code=503, detail="Open-Meteo API failed")
+    
+    # 3. Prepare Features
+    df = prepare_features(weather, air_quality, city)
+    if df is None or len(df) == 0: raise HTTPException(status_code=500, detail="Data processing failed")
 
+    # =========================================================================
+    # START: DYNAMIC WINTER CALIBRATION
+    # =========================================================================
+    # Logic: 
+    # 1. Windy days (>12km/h) -> Trust model (Low Multiplier)
+    # 2. Calm days (<12km/h) -> Check PM levels
+    #    - If PM < 80 (Clean) -> Trust model (Base Multiplier)
+    #    - If PM > 80 (Rising) -> Apply High Multiplier
+    #    - If PM > 150 (Severe) -> Apply Extreme Multiplier
+    
+    current_month = df['month'].iloc[0]
+    is_winter = current_month in [10, 11, 12, 1, 2]
 
-# =============================================================================
-# ENDPOINTS
-# =============================================================================
-
-@app.get("/", tags=["Root"])
-async def root():
-    """Root endpoint"""
-    return {
-        "message": "AQI Prediction API",
-        "version": "1.0.0",
-        "docs": "/docs",
-        "health": "/health"
+    # Base Multipliers (Conservative to protect "Normal" days)
+    CITY_TIERS = {
+        "Delhi": 1.5, "Gurugram": 1.5, "Noida": 1.5, "Ghaziabad": 1.5,
+        "Lucknow": 1.4, "Patna": 1.4, "Kanpur": 1.4,
+        "Ahmedabad": 1.3, "Chandigarh": 1.3, "Jaipur": 1.3, "Kolkata": 1.2
     }
 
+    if is_winter:
+        base_factor = CITY_TIERS.get(city, 1.0)
+        
+        if base_factor > 1.0:
+            for idx in df.index:
+                raw_pm25 = df.at[idx, 'pm2_5']
+                raw_wind = df.at[idx, 'wind_speed_10m']
+                
+                # WIND CHECK: If windy, pollution disperses.
+                if raw_wind > 12.0:
+                    active_factor = 1.2 # Slight bias only
+                    wind_correction = 1.0
+                else:
+                    # CALM CHECK: How bad is the PM?
+                    if raw_pm25 < 80.0:
+                        active_factor = base_factor # Normal winter day
+                    elif raw_pm25 < 150.0:
+                        active_factor = base_factor * 1.5 # Rising smog
+                    else:
+                        active_factor = base_factor * 2.2 # FIRECRACKER / EXTREME EVENT
+                    
+                    wind_correction = 0.6 # Simulate stagnation
 
-@app.get("/health", response_model=HealthResponse, tags=["Health"])
-async def health_check():
-    """
-    Health check endpoint
-    Used by Railway and Docker health checks
-    """
-    try:
-        model_loader = get_model_loader()
-        model_loaded = model_loader.model is not None
-        
-        return HealthResponse(
-            status="healthy" if model_loaded else "degraded",
-            version="1.0.0",
-            model_loaded=model_loaded,
-            timestamp=datetime.now().isoformat()
-        )
-    
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return HealthResponse(
-            status="unhealthy",
-            version="1.0.0",
-            model_loaded=False,
-            timestamp=datetime.now().isoformat()
-        )
+                # Apply Factors
+                df.at[idx, 'pm2_5'] = raw_pm25 * active_factor
+                df.at[idx, 'pm10'] = df.at[idx, 'pm10'] * (active_factor * 0.9)
+                df.at[idx, 'wind_speed_10m'] = raw_wind * wind_correction
+                
+                # NO2 Boost for traffic metros
+                if active_factor > 1.5:
+                    df.at[idx, 'nitrogen_dioxide'] = df.at[idx, 'nitrogen_dioxide'] * 1.3
 
+    # =========================================================================
+    # END CALIBRATION
+    # =========================================================================
 
-@app.post("/predict", response_model=PredictionResponse, tags=["Prediction"])
-async def predict_manual(request: PredictionRequest):
-    """
-    Manual AQI prediction
+    # 4. Generate ML Predictions
+    raw_predictions = predict_aqi(df)
     
-    Provide pollutant and weather data to get AQI prediction.
-    All parameters are optional - defaults will be used for missing values.
-    """
-    try:
-        # Get model loader
-        model_loader = get_model_loader()
-        
-        # Get city info
-        city_info = get_city_info(request.city)
-        
-        # Create live predictor
-        predictor = LivePredictor(model_loader)
-        
-        # Prepare input features (from notebook logic)
-        features = predictor.prepare_manual_features(
-            city_name=request.city,
-            city_info=city_info,
-            pm2_5=request.pm2_5,
-            pm10=request.pm10,
-            o3=request.o3,
-            no2=request.no2,
-            so2=request.so2,
-            co=request.co,
-            dust=request.dust,
-            aod=request.aod,
-            humidity=request.humidity,
-            dew_point=request.dew_point,
-            pressure=request.pressure,
-            cloud_cover=request.cloud_cover,
-            wind_gusts=request.wind_gusts,
-            precipitation=request.precipitation,
-            is_raining=request.is_raining,
-            heavy_rain=request.heavy_rain,
-            is_weekend=request.is_weekend,
-            month=request.month
-        )
-        
-        # Predict
-        predicted_aqi, aqi_category, aqi_emoji = predictor.predict(features)
-        
-        # Determine confidence (based on input completeness)
-        provided_params = sum([
-            request.pm2_5 is not None,
-            request.pm10 is not None,
-            request.o3 is not None,
-            request.no2 is not None,
-            request.humidity is not None
-        ])
-        
-        if provided_params >= 4:
-            confidence = "high"
-        elif provided_params >= 2:
-            confidence = "medium"
-        else:
-            confidence = "low"
-        
-        return PredictionResponse(
-            city=request.city,
-            state=city_info['state'],
-            predicted_aqi=predicted_aqi,
-            aqi_category=aqi_category,
-            aqi_emoji=aqi_emoji,
-            confidence=confidence,
-            timestamp=datetime.now().isoformat(),
-            input_features=features,
-            model_version="1.0.0"
-        )
+    # =========================================================================
+    # START: PHYSICS FLOOR CHECK (The Final Safety Net)
+    # =========================================================================
+    # Forces the AQI to match the PM2.5 physics, ensuring we never predict
+    # "Moderate" when PM2.5 is 500+ (Hazardous).
     
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    final_aqi = []
+    for i, pred in enumerate(raw_predictions):
+        min_aqi = calculate_physics_min_aqi(df.iloc[i]['pm2_5'], df.iloc[i]['pm10'])
+        # Take the HIGHER of the Model's thought vs. Physics reality
+        final_aqi.append(max(float(pred), min_aqi))
     
-    except Exception as e:
-        logger.error(f"Prediction failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
-
-
-@app.post("/forecast", response_model=ForecastResponse, tags=["Forecast"])
-async def forecast_api(request: ForecastRequest):
-    """
-    AQI forecast using Open-Meteo API
+    df['aqi'] = final_aqi
     
-    Fetches weather and AQ forecast data from Open-Meteo and predicts AQI.
-    """
-    try:
-        # Get model loader
-        model_loader = get_model_loader()
-        
-        # Get city info
-        city_info = get_city_info(request.city)
-        
-        # Create live predictor
-        predictor = LivePredictor(model_loader)
-        
-        # Get forecast (from notebook logic)
-        forecast_df = predictor.forecast_from_api(
-            city_name=request.city,
-            city_info=city_info,
-            forecast_days=request.forecast_days
-        )
-        
-        if forecast_df is None or len(forecast_df) == 0:
-            raise HTTPException(
-                status_code=503,
-                detail="Failed to fetch forecast data from Open-Meteo API"
-            )
-        
-        # Create hourly forecasts
-        hourly_forecasts = []
-        for _, row in forecast_df.iterrows():
-            hourly_forecasts.append({
-                "datetime": row['datetime'].isoformat(),
-                "hour": int(row['hour']),
-                "predicted_aqi": float(row['predicted_aqi']),
-                "aqi_category": row['aqi_category'],
-                "aqi_emoji": row['aqi_emoji']
-            })
-        
-        # Summary statistics
-        summary = {
-            "avg_aqi": float(forecast_df['predicted_aqi'].mean()),
-            "max_aqi": float(forecast_df['predicted_aqi'].max()),
-            "min_aqi": float(forecast_df['predicted_aqi'].min()),
-            "max_hour": int(forecast_df.loc[forecast_df['predicted_aqi'].idxmax(), 'hour']),
-            "min_hour": int(forecast_df.loc[forecast_df['predicted_aqi'].idxmin(), 'hour'])
+    # 5. Format Response
+    hourly_forecast = []
+    for _, row in df.iterrows():
+        cat = aqi_category(row['aqi'])
+        hourly_forecast.append({
+            "datetime": row['datetime'].isoformat(), "hour": int(row['hour']),
+            "aqi": round(row['aqi'], 1), "category": cat["cat"], "emoji": cat["emoji"], "color": cat["color"],
+            "pm2_5": round(row['pm2_5'], 1), "pm10": round(row['pm10'], 1),
+            "ozone": round(row['ozone'], 1), "nitrogen_dioxide": round(row['nitrogen_dioxide'], 1),
+            "sulphur_dioxide": round(row['sulphur_dioxide'], 1), "carbon_monoxide": round(row['carbon_monoxide'], 1),
+            "relative_humidity_2m": round(row['relative_humidity_2m'], 1), "wind_speed_10m": round(row['wind_speed_10m'], 1)
+        })
+    
+    df['date'] = df['datetime'].dt.date
+    daily_summary = []
+    for date, group in df.groupby('date'):
+        d_cat = aqi_category(group['aqi'].mean())
+        daily_summary.append({
+            "date": str(date), "avg_aqi": round(float(group['aqi'].mean()), 1),
+            "max_aqi": round(float(group['aqi'].max()), 1), "min_aqi": round(float(group['aqi'].min()), 1),
+            "category": d_cat["cat"], "emoji": d_cat["emoji"], "color": d_cat["color"]
+        })
+    
+    avg_aqi = float(np.mean(final_aqi))
+    o_cat = aqi_category(avg_aqi)
+    
+    return {
+        "success": True, "city": city, "state": city_info['state'],
+        "coordinates": {"lat": city_info['lat'], "lon": city_info['lon']},
+        "forecast_days": days, "generated_at": datetime.now().isoformat(),
+        "hourly": hourly_forecast, "daily": daily_summary,
+        "summary": {
+            "avg_aqi": round(avg_aqi, 1), "max_aqi": round(max(final_aqi), 1),
+            "min_aqi": round(min(final_aqi), 1), "category": o_cat["cat"],
+            "emoji": o_cat["emoji"], "color": o_cat["color"], "total_hours": len(hourly_forecast)
         }
-        
-        return ForecastResponse(
-            city=request.city,
-            state=city_info['state'],
-            forecast_days=request.forecast_days,
-            summary=summary,
-            hourly_forecasts=hourly_forecasts,
-            timestamp=datetime.now().isoformat(),
-            model_version="1.0.0"
-        )
-    
-    except HTTPException:
-        raise
-    
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    
-    except Exception as e:
-        logger.error(f"Forecast failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Forecast failed: {str(e)}")
-
-
-@app.get("/cities", tags=["Info"])
-async def list_cities():
-    """
-    List all supported cities
-    """
-    from src.api.dependencies import get_cities_config
-    
-    cities = get_cities_config()
-    
-    return {
-        "total_cities": len(cities),
-        "cities": [
-            {
-                "name": name,
-                "state": info['state'],
-                "coordinates": {
-                    "lat": info['lat'],
-                    "lon": info['lon']
-                }
-            }
-            for name, info in sorted(cities.items())
-        ]
     }
-
-
-# =============================================================================
-# STARTUP & SHUTDOWN EVENTS
-# =============================================================================
-
-@app.on_event("startup")
-async def startup_event():
-    """Load model on startup"""
-    logger.info("Starting AQI Prediction API...")
-    
-    try:
-        model_loader = get_model_loader()
-        logger.info(f"✓ Model loaded successfully")
-        logger.info(f"✓ Features: {len(model_loader.feature_names)}")
-    except Exception as e:
-        logger.error(f"Failed to load model: {e}")
-        logger.warning("API will start but predictions will fail")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown"""
-    logger.info("Shutting down AQI Prediction API...")
-
-
-# =============================================================================
-# MAIN (for local development)
-# =============================================================================
 
 if __name__ == "__main__":
     import uvicorn
-    
-    uvicorn.run(
-        "src.api.main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info"
-    )
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)

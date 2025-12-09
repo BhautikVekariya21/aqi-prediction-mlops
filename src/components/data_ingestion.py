@@ -67,102 +67,81 @@ class DataIngestion:
     def _download_city_data(self, city_name: str, city_info: Dict) -> Optional[pd.DataFrame]:
         """
         Download weather + AQ data for one city
-        Matches notebook download logic exactly
-        
-        Args:
-            city_name: City name
-            city_info: Dict with lat, lon, state
-        
-        Returns:
-            Combined DataFrame or None if failed
+        Matches notebook ingestion logic
         """
         lat = city_info["lat"]
         lon = city_info["lon"]
         state = city_info["state"]
-        
+
         logger.info(f"Processing: {city_name}, {state}")
         logger.info(f"Coordinates: ({lat}, {lon})")
-        
+
         all_weather = []
         all_aq = []
-        
-        # Download year by year (from notebook)
+
+        # Download year-by-year
         start_year = int(self.start_date[:4])
         end_year = int(self.end_date[:4])
-        
-        for year in range(start_year, end_year + 1):
-            # Determine year boundaries
-            if year == start_year:
-                year_start = self.start_date
-            else:
-                year_start = f"{year}-01-01"
-            
-            if year == end_year:
-                year_end = self.end_date
-            else:
-                year_end = f"{year}-12-31"
-            
-            logger.info(f"  Downloading {year}: {year_start} to {year_end}")
-            
-            # Weather data
-            logger.info(f"    Fetching weather...")
-            weather_data = self.api_client.fetch_historical_weather(
-                lat, lon, year_start, year_end
-            )
-            
+
+        total_years = end_year - start_year + 1
+        logger.info(f"  Will download {total_years} years: {start_year} to {end_year}")
+
+        for year_index, year in enumerate(range(start_year, end_year + 1), start=1):
+            year_start = self.start_date if year == start_year else f"{year}-01-01"
+            year_end = self.end_date if year == end_year else f"{year}-12-31"
+
+            logger.info(f"  [{year_index}/{total_years}] Downloading {year}: {year_start} to {year_end}")
+
+            # Weather Data
+            logger.info(f"    Fetching weather…")
+            weather_data = self.api_client.fetch_historical_weather(lat, lon, year_start, year_end)
+
             if weather_data and "hourly" in weather_data:
                 weather_df = pd.DataFrame(weather_data["hourly"])
                 all_weather.append(weather_df)
-                logger.info(f"    ✓ Weather: {len(weather_df)} records")
+                logger.info(f"    OK Weather: {len(weather_df):,} records")
             else:
-                logger.warning(f"    ✗ Weather failed for {year}")
-            
+                logger.warning(f"    FAILED Weather for {year}")
+
             time.sleep(1)
-            
-            # Air quality data
-            logger.info(f"    Fetching air quality...")
-            aq_data = self.api_client.fetch_air_quality(
-                lat, lon, year_start, year_end
-            )
-            
+
+            # AQ Data
+            logger.info(f"    Fetching air quality…")
+            aq_data = self.api_client.fetch_air_quality(lat, lon, year_start, year_end)
+
             if aq_data and "hourly" in aq_data:
                 aq_df = pd.DataFrame(aq_data["hourly"])
                 all_aq.append(aq_df)
-                logger.info(f"    ✓ AQ: {len(aq_df)} records")
+                logger.info(f"    OK AQ: {len(aq_df):,} records")
             else:
-                logger.warning(f"    ✗ AQ failed for {year}")
-            
+                logger.warning(f"    FAILED AQ for {year}")
+
+            logger.info(f"    Completed year {year} ({year_index}/{total_years})")
             time.sleep(1)
-        
-        # Combine years
+
         if not all_weather:
             logger.error(f"No weather data for {city_name}")
             return None
-        
-        weather_combined = pd.concat(all_weather, ignore_index=True)
-        weather_combined = weather_combined.drop_duplicates(subset=["time"])
+
+        weather_combined = pd.concat(all_weather, ignore_index=True).drop_duplicates(subset=["time"])
         weather_combined["time"] = pd.to_datetime(weather_combined["time"])
-        
+
         if all_aq:
-            aq_combined = pd.concat(all_aq, ignore_index=True)
-            aq_combined = aq_combined.drop_duplicates(subset=["time"])
+            aq_combined = pd.concat(all_aq, ignore_index=True).drop_duplicates(subset=["time"])
             aq_combined["time"] = pd.to_datetime(aq_combined["time"])
-            
-            # Merge weather and AQ
             merged = pd.merge(weather_combined, aq_combined, on="time", how="left")
         else:
             logger.warning(f"No AQ data for {city_name}, using weather only")
             merged = weather_combined.copy()
-        
-        # Add metadata columns
+
         merged.insert(0, "city", city_name)
         merged.insert(1, "state", state)
         merged.insert(2, "latitude", lat)
         merged.insert(3, "longitude", lon)
         merged.rename(columns={"time": "datetime"}, inplace=True)
-        
-        logger.info(f"✓ {city_name} complete: {len(merged):,} records")
-        
+
+        logger.info(f"OK {city_name} complete: {len(merged):,} records")
+
         return merged
     
     def run(self) -> str:
@@ -193,7 +172,7 @@ class DataIngestion:
                 
                 # Batch cooldown (from notebook)
                 if idx % self.cities_per_batch == 0 and idx < len(self.cities):
-                    logger.info("\n⏳ API cooldown (90 seconds)...")
+                    logger.info("\nCooldown API cooldown (90 seconds)...")
                     time.sleep(90)
                 else:
                     time.sleep(5)
@@ -235,7 +214,7 @@ class DataIngestion:
         # Print summary
         self._print_summary(final_df, failed_cities)
         
-        logger.info(f"\n✓ Data ingestion complete!")
+        logger.info(f"\nOK Data ingestion complete!")
         logger.info(f"Output: {output_file}")
         logger.info(f"Metrics: {metrics_file}")
         
@@ -277,7 +256,7 @@ class DataIngestion:
         print(f"  US AQI:             {df['us_aqi'].notna().sum() / len(df) * 100:.2f}%")
         
         if failed_cities:
-            print(f"\n⚠️  Failed Cities ({len(failed_cities)}):")
+            print(f"\nWarning  Failed Cities ({len(failed_cities)}):")
             for city in failed_cities:
                 print(f"  - {city}")
         
