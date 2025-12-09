@@ -42,40 +42,10 @@ ENV/
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 
-# --- DVC (data tracked separately) ---
-/data/raw/*
-!/data/raw/.gitignore
-/data/processed/*
-!/data/processed/.gitignore
-/data/features/*
-!/data/features/.gitignore
-/data/splits/*
-!/data/splits/.gitignore
-
-# --- Models (DVC tracked) ---
-/models/*.json
-/models/*.pkl
-/models/*.cbm
-/models/*.txt
-/models/optimized/*
-!/models/optimized/.gitignore
-/models/evaluation/*
-!/models/evaluation/.gitignore
-
-# --- Reports ---
-/reports/*.csv
-/reports/*.json
-/reports/prediction_plots/*
-!/reports/prediction_plots/.gitignore
-
 # --- Environment Variables ---
 .env
 .env.local
 .env.*.local
-
-# --- MLflow ---
-mlruns/
-mlartifacts/
 
 # --- Logs ---
 *.log
@@ -91,11 +61,57 @@ logs/
 htmlcov/
 .pytest_cache/
 
-# --- DVC ---
-/dvc_cache/.venv/
-__pycache__/
-*.pkl
-*.gz
-data/raw/
-models/optimized/
-.DS_Store
+# --- MLflow ---
+mlruns/
+mlartifacts/
+
+# =============================================================================
+# DATA (DVC tracked separately)
+# =============================================================================
+/data/raw/*
+!/data/raw/.gitkeep
+
+/data/processed/*
+!/data/processed/.gitkeep
+
+/data/features/*
+!/data/features/.gitkeep
+
+/data/splits/*
+!/data/splits/.gitkeep
+
+# =============================================================================
+# MODELS - IMPORTANT: Allow optimized models for Railway
+# =============================================================================
+
+# Strategy: Ignore specific model files, not the optimized folder
+
+# Ignore trained models in root of /models/
+/models/xgboost.json
+/models/catboost.cbm
+/models/random_forest.pkl
+/models/extra_trees.pkl
+/models/decision_tree.pkl
+/models/training_metrics.json
+/models/detailed_results.json
+/models/features.txt
+
+# Ignore evaluation folder contents
+/models/evaluation/*
+!/models/evaluation/.gitkeep
+
+# DO NOT ignore /models/optimized/ - we need these files for Railway!
+# (No rules here = optimized folder is tracked)
+
+# =============================================================================
+# REPORTS
+# =============================================================================
+/reports/*.csv
+/reports/*.json
+/reports/prediction_plots/*
+!/reports/prediction_plots/.gitkeep
+
+# =============================================================================
+# DVC
+# =============================================================================
+/dvc_cache/
