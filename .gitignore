@@ -92,4 +92,10 @@ htmlcov/
 .pytest_cache/
 
 # --- DVC ---
-/dvc_cache/
+/dvc_cache/.venv/
+__pycache__/
+*.pkl
+*.gz
+data/raw/
+models/optimized/
+.DS_Store
