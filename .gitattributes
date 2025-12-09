@@ -1,0 +1,2 @@
+models/optimized/*.pkl filter=lfs diff=lfs merge=lfs -text
+models/optimized/*.json.gz filter=lfs diff=lfs merge=lfs -text
