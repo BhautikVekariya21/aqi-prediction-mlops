@@ -1,31 +1,27 @@
 """
-AQI Prediction API - Railway Deployment
-Version: 1.3.1 (Memory Optimized)
+AQI Prediction API - Ultra Lite (No Scikit-Learn)
+Version: 1.4.0
 """
 
-# 1. Light imports first
 import os
 import gc
 import sys
-
-# Force garbage collection before heavy imports
-gc.collect()
-
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional, List, Dict
-from datetime import datetime
+import gzip
+import tempfile
 from pathlib import Path
+from datetime import datetime
+from typing import Optional, List, Dict
 
-# 2. Heavy imports (Load lazily if possible, but standard here)
+# Heavy imports - Loaded cautiously
 import numpy as np
 import pandas as pd
 import xgboost as xgb
 import requests
-import joblib
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-# Clear memory again after heavy imports
+# Force garbage collection immediately
 gc.collect()
 
 # =============================================================================
@@ -33,7 +29,7 @@ gc.collect()
 # =============================================================================
 
 MODEL_DIR = Path("models/optimized")
-API_VERSION = "1.3.1"
+API_VERSION = "1.4.0"
 
 REQUIRED_FEATURES = [
     'wind_gusts_10m', 'week_of_year', 'state_encoded', 'pm2_5', 'sulphur_dioxide',
@@ -45,29 +41,26 @@ REQUIRED_FEATURES = [
     'dew_point_2m', 'cloud_cover_mid', 'wind_direction_10m'
 ]
 
-print("🚀 Starting AQI Prediction API (Memory Optimized)...")
+print("🚀 Starting AQI Prediction API (Ultra Lite)...")
 
 # =============================================================================
-# LOAD MODEL
+# LOAD MODEL (JSON/GZIP ONLY)
 # =============================================================================
 
 print("📦 Loading model...")
 model = None
 
 try:
-    # Check JSON.gz FIRST (It is much lighter on RAM than Pickle)
+    # We only look for the JSON model because loading PKL requires scikit-learn
+    # which causes the Out of Memory crash.
     gzip_path = MODEL_DIR / "model.json.gz"
-    pkl_path = MODEL_DIR / "model_final.pkl"
+    json_path = MODEL_DIR / "model.json"
 
     if gzip_path.exists():
-        import gzip
-        import tempfile
-        print("✓ Found GZIP model (Memory efficient path)...")
-        
+        print("✓ Found GZIP model...")
         with gzip.open(gzip_path, 'rb') as f:
             model_bytes = f.read()
         
-        # Write to temp file to load
         with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as tmp:
             tmp.write(model_bytes)
             tmp_path = tmp.name
@@ -75,28 +68,26 @@ try:
         model = xgb.Booster()
         model.load_model(tmp_path)
         os.unlink(tmp_path)
-        
-        # Clean up large byte variables immediately
         del model_bytes
-        gc.collect()
-        print("✓ Model loaded from GZIP")
-
-    elif pkl_path.exists():
-        print("⚠️ Loading PKL model (High RAM usage)...")
-        model = joblib.load(pkl_path)
-        print("✓ Model loaded from PKL")
-    
+        print("✓ Model loaded successfully")
+        
+    elif json_path.exists():
+        print("✓ Found JSON model...")
+        model = xgb.Booster()
+        model.load_model(str(json_path))
+        print("✓ Model loaded successfully")
+        
     else:
-        print("⚠️ No model file found. API will start but predictions will fail.")
+        print("❌ CRITICAL: No model.json.gz found!")
+        print("   (The .pkl file is too heavy for the free server)")
 
 except Exception as e:
     print(f"❌ Error loading model: {e}")
 
-# FINAL MEMORY CLEANUP
 gc.collect()
 
 # =============================================================================
-# CITY DATA
+# DATA & HELPERS
 # =============================================================================
 
 CITIES = {
@@ -136,10 +127,6 @@ CITY_ENC = {c: i for i, c in enumerate(sorted(CITIES.keys()))}
 STATES = sorted(set(v['state'] for v in CITIES.values()))
 STATE_ENC = {s: i for i, s in enumerate(STATES)}
 
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
 def aqi_category(aqi: float) -> Dict:
     if aqi <= 50: return {"cat": "Good", "emoji": "🟢", "color": "#00e400"}
     elif aqi <= 100: return {"cat": "Moderate", "emoji": "🟡", "color": "#ffff00"}
@@ -154,28 +141,29 @@ def calculate_physics_min_aqi(pm2_5: float, pm10: float) -> float:
     elif pm2_5 > 250: return 300 + (pm2_5 - 250) * 0.9
     elif pm2_5 > 150: return 200 + (pm2_5 - 150) * 1.0
     elif pm2_5 > 55:  return 150 + (pm2_5 - 55) * 1.0
-    
     if pm10 > 430: return 400
     if pm10 > 350: return 300
     return 0.0
 
-def fetch_data(lat: float, lon: float, days: int = 2):
+def fetch_data(lat: float, lon: float, days: int):
     try:
-        weather = requests.get("https://api.open-meteo.com/v1/forecast", params={
-            "latitude": lat, "longitude": lon,
-            "hourly": ["relative_humidity_2m", "dew_point_2m", "wind_speed_10m",
-                       "wind_gusts_10m", "wind_direction_10m", "pressure_msl",
-                       "surface_pressure", "cloud_cover", "cloud_cover_low",
-                       "cloud_cover_mid", "cloud_cover_high", "is_day"],
-            "timezone": "Asia/Kolkata", "forecast_days": days
-        }, timeout=10).json()
+        # Reduced timeout to prevent hanging connections
+        params = {"latitude": lat, "longitude": lon, "timezone": "Asia/Kolkata", "forecast_days": days}
         
-        air_quality = requests.get("https://air-quality-api.open-meteo.com/v1/air-quality", params={
-            "latitude": lat, "longitude": lon,
-            "hourly": ["pm2_5", "pm10", "carbon_monoxide", "nitrogen_dioxide",
-                       "sulphur_dioxide", "ozone", "dust", "aerosol_optical_depth"],
-            "timezone": "Asia/Kolkata", "forecast_days": days
-        }, timeout=10).json()
+        w_params = params.copy()
+        w_params["hourly"] = ["relative_humidity_2m", "dew_point_2m", "wind_speed_10m",
+                              "wind_gusts_10m", "wind_direction_10m", "pressure_msl",
+                              "surface_pressure", "cloud_cover", "cloud_cover_low",
+                              "cloud_cover_mid", "cloud_cover_high", "is_day"]
+        
+        aq_params = params.copy()
+        aq_params["hourly"] = ["pm2_5", "pm10", "carbon_monoxide", "nitrogen_dioxide",
+                               "sulphur_dioxide", "ozone", "dust", "aerosol_optical_depth"]
+
+        # Using a session for connection pooling efficiency
+        with requests.Session() as s:
+            weather = s.get("https://api.open-meteo.com/v1/forecast", params=w_params, timeout=8).json()
+            air_quality = s.get("https://air-quality-api.open-meteo.com/v1/air-quality", params=aq_params, timeout=8).json()
         
         return weather, air_quality
     except Exception as e:
@@ -233,18 +221,8 @@ def prepare_features(weather: Dict, air_quality: Dict, city: str) -> Optional[pd
     
     return pd.DataFrame(rows) if rows else None
 
-def predict_aqi(df: pd.DataFrame) -> np.ndarray:
-    X = df[REQUIRED_FEATURES].values.astype(np.float32)
-    X = np.nan_to_num(X, nan=0.0)
-    
-    if hasattr(model, 'predict'): 
-        return model.predict(X)
-    else:
-        dmatrix = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
-        return model.predict(dmatrix)
-
 # =============================================================================
-# API ENDPOINTS
+# API MODELS & ENDPOINTS
 # =============================================================================
 
 class HourlyForecast(BaseModel):
@@ -279,7 +257,7 @@ def get_cities():
 @app.get("/health")
 def health_check():
     if model is None: raise HTTPException(status_code=503, detail="Model not loaded")
-    return {"status": "healthy", "memory_usage": "optimized"}
+    return {"status": "healthy", "mode": "ultra_lite"}
 
 @app.get("/predict/{city}", response_model=PredictionResponse)
 def predict_city_aqi(city: str, days: int = 2):
@@ -295,7 +273,7 @@ def predict_city_aqi(city: str, days: int = 2):
     df = prepare_features(weather, air_quality, city)
     if df is None or len(df) == 0: raise HTTPException(status_code=500, detail="Data processing failed")
 
-    # Dynamic Winter Calibration & Physics Floor Logic (Preserved)
+    # Winter Calibration
     current_month = df['month'].iloc[0]
     is_winter = current_month in [10, 11, 12, 1, 2]
     CITY_TIERS = {"Delhi": 1.5, "Gurugram": 1.5, "Noida": 1.5, "Ghaziabad": 1.5, "Lucknow": 1.4, "Patna": 1.4, "Kanpur": 1.4, "Ahmedabad": 1.3, "Chandigarh": 1.3, "Jaipur": 1.3, "Kolkata": 1.2}
@@ -304,22 +282,23 @@ def predict_city_aqi(city: str, days: int = 2):
         base_factor = CITY_TIERS.get(city, 1.0)
         if base_factor > 1.0:
             for idx in df.index:
-                raw_pm25 = df.at[idx, 'pm2_5']
-                raw_wind = df.at[idx, 'wind_speed_10m']
-                if raw_wind > 12.0:
-                    active_factor = 1.2; wind_correction = 1.0
+                raw_pm25 = df.at[idx, 'pm2_5']; raw_wind = df.at[idx, 'wind_speed_10m']
+                if raw_wind > 12.0: active_factor = 1.2; wind_correction = 1.0
                 else:
                     if raw_pm25 < 80.0: active_factor = base_factor
                     elif raw_pm25 < 150.0: active_factor = base_factor * 1.5
                     else: active_factor = base_factor * 2.2
                     wind_correction = 0.6
-                
                 df.at[idx, 'pm2_5'] = raw_pm25 * active_factor
                 df.at[idx, 'pm10'] = df.at[idx, 'pm10'] * (active_factor * 0.9)
                 df.at[idx, 'wind_speed_10m'] = raw_wind * wind_correction
                 if active_factor > 1.5: df.at[idx, 'nitrogen_dioxide'] = df.at[idx, 'nitrogen_dioxide'] * 1.3
 
-    raw_predictions = predict_aqi(df)
+    # Prediction (XGBoost Native)
+    X = df[REQUIRED_FEATURES].values.astype(np.float32)
+    X = np.nan_to_num(X, nan=0.0)
+    dmatrix = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
+    raw_predictions = model.predict(dmatrix)
     
     final_aqi = []
     for i, pred in enumerate(raw_predictions):
@@ -327,6 +306,7 @@ def predict_city_aqi(city: str, days: int = 2):
         final_aqi.append(max(float(pred), min_aqi))
     df['aqi'] = final_aqi
     
+    # Formatting
     hourly_forecast = []
     for _, row in df.iterrows():
         cat = aqi_category(row['aqi'])
@@ -352,8 +332,8 @@ def predict_city_aqi(city: str, days: int = 2):
     avg_aqi = float(np.mean(final_aqi))
     o_cat = aqi_category(avg_aqi)
     
-    # Final cleanup per request
-    del df, raw_predictions, final_aqi
+    # Aggressive Cleanup
+    del df, X, dmatrix, raw_predictions, final_aqi
     gc.collect()
 
     return {

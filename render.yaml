@@ -14,3 +14,5 @@ services:
         value: 3.10.12
       - key: WEB_CONCURRENCY
         value: "1"
+      - key: MALLOC_ARENA_MAX
+        value: "2"
