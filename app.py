@@ -1,6 +1,6 @@
 """
-AQI Prediction API - Ultra Lite (Parallel Processing)
-Version: 1.8.0
+AQI Prediction API - Ultra Lite (Robust + Production Ready)
+Version: 1.9.0
 """
 
 import os
@@ -31,7 +31,10 @@ gc.collect()
 # =============================================================================
 
 MODEL_DIR = Path(".") 
-API_VERSION = "1.8.0"
+API_VERSION = "1.9.0"
+
+# Strict timeout: If weather API takes >3s, drop the request
+EXTERNAL_API_TIMEOUT = 3.0 
 
 REQUIRED_FEATURES = [
     'wind_gusts_10m', 'week_of_year', 'state_encoded', 'pm2_5', 'sulphur_dioxide',
@@ -43,15 +46,26 @@ REQUIRED_FEATURES = [
     'dew_point_2m', 'cloud_cover_mid', 'wind_direction_10m'
 ]
 
-print("🚀 Starting AQI Prediction API (Parallel Mode)...")
+print("🚀 Starting AQI Prediction API (Robust Mode)...")
 
 # =============================================================================
-# GLOBAL SESSION (Thread-Safe)
+# GLOBAL SESSION (Thread-Safe & Retries)
 # =============================================================================
 session = requests.Session()
-# Increase pool size to handle parallel requests
-adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
+
+# Retry logic: If connection fails, try 1 more time, then give up
+retry_strategy = requests.adapters.Retry(
+    total=1,
+    backoff_factor=0.2,
+    status_forcelist=[429, 500, 502, 503, 504],
+)
+adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry_strategy)
 session.mount('https://', adapter)
+
+# Define Headers to prevent Rate Limiting (Identify as a valid app)
+HEADERS = {
+    "User-Agent": "AQI-Prediction-App/1.0 (bhautik.vekariya@example.com)"
+}
 
 # =============================================================================
 # LOAD MODEL (JSON/GZIP ONLY)
@@ -167,12 +181,14 @@ def fetch_data(lat: float, lon: float, days: int):
         aq_params["hourly"] = ["pm2_5", "pm10", "carbon_monoxide", "nitrogen_dioxide",
                                "sulphur_dioxide", "ozone", "dust", "aerosol_optical_depth"]
 
-        weather = session.get("https://api.open-meteo.com/v1/forecast", params=w_params, timeout=5).json()
-        air_quality = session.get("https://air-quality-api.open-meteo.com/v1/air-quality", params=aq_params, timeout=5).json()
+        # Uses Global Session + Headers + Strict Timeout
+        weather = session.get("https://api.open-meteo.com/v1/forecast", params=w_params, headers=HEADERS, timeout=EXTERNAL_API_TIMEOUT).json()
+        air_quality = session.get("https://air-quality-api.open-meteo.com/v1/air-quality", params=aq_params, headers=HEADERS, timeout=EXTERNAL_API_TIMEOUT).json()
         
         return weather, air_quality
     except Exception as e:
-        print(f"Error fetching data: {e}")
+        # Fail silently for bulk requests, log only
+        # print(f"Error fetching data: {e}") 
         return None, None
 
 def safe_get(data_dict, key, index, default, total_length):
@@ -297,12 +313,12 @@ def predict_city_aqi(city: str, days: int = 2):
     city_info = CITIES[city]
     
     weather, air_quality = fetch_data(city_info['lat'], city_info['lon'], days)
-    if not weather or not air_quality: raise HTTPException(status_code=503, detail="Open-Meteo API failed")
+    if not weather or not air_quality: raise HTTPException(status_code=503, detail="Open-Meteo API failed/timeout")
     
     df = prepare_features(weather, air_quality, city)
     if df is None or len(df) == 0: raise HTTPException(status_code=500, detail="Data processing failed")
 
-    # Winter Calibration
+    # Winter Calibration (Same logic as before)
     current_month = df['month'].iloc[0]
     is_winter = current_month in [10, 11, 12, 1, 2]
     CITY_TIERS = {"Delhi": 1.5, "Gurugram": 1.5, "Noida": 1.5, "Ghaziabad": 1.5, "Lucknow": 1.4, "Patna": 1.4, "Kanpur": 1.4, "Ahmedabad": 1.3, "Chandigarh": 1.3, "Jaipur": 1.3, "Kolkata": 1.2}
@@ -375,32 +391,24 @@ def predict_city_aqi(city: str, days: int = 2):
     }
 
 # =============================================================================
-# BULK PREDICT (THREADED PARALLEL PROCESSING)
+# BULK PREDICT (THREADED PARALLEL PROCESSING + ROBUSTNESS)
 # =============================================================================
 def process_single_city(city_name: str) -> Optional[Dict]:
     """Helper function to be run in parallel for each city"""
     try:
         city_info = CITIES[city_name]
-        # Fetch minimal data (1 day)
+        # Fetch minimal data (1 day) - timeout is handled inside fetch_data
         weather, air_quality = fetch_data(city_info['lat'], city_info['lon'], 1)
         
         if weather and air_quality:
             df = prepare_features(weather, air_quality, city_name)
             if df is not None and len(df) > 0:
-                # Quick Prediction for first hour only (current status)
                 current_row = df.iloc[[0]].copy() 
-                
-                # Apply simple physics floor to that single row
                 min_aqi = calculate_physics_min_aqi(current_row['pm2_5'].values[0], current_row['pm10'].values[0])
-                
-                # Convert to XGBoost format
                 X = current_row[REQUIRED_FEATURES].values.astype(np.float32)
                 X = np.nan_to_num(X, nan=0.0)
-                
-                # Predict
                 dmatrix = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
                 pred = float(model.predict(dmatrix)[0])
-                
                 final_aqi = max(pred, min_aqi)
                 cat = aqi_category(final_aqi)
                 
@@ -411,8 +419,9 @@ def process_single_city(city_name: str) -> Optional[Dict]:
                     "category": cat['cat'],
                     "emoji": cat['emoji']
                 }
-    except Exception as e:
-        print(f"Error processing {city_name}: {e}")
+    except Exception:
+        # If one city fails, return None so the rest still work
+        return None
     return None
 
 @app.get("/predict/all/cities", response_model=List[CitySummary])
@@ -422,35 +431,35 @@ def predict_all_cities():
     
     results = []
     
-    # Run 10 requests in parallel
+    # 10 Workers is the sweet spot for Free Tier
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        # Submit all tasks
         future_to_city = {executor.submit(process_single_city, city): city for city in CITIES}
         
-        # Collect results as they finish
         for future in concurrent.futures.as_completed(future_to_city):
-            data = future.result()
-            if data:
-                results.append(data)
+            try:
+                data = future.result()
+                if data:
+                    results.append(data)
+            except Exception:
+                continue # Skip failures gracefully
 
+    # Memory cleanup after heavy operation
+    gc.collect()
+    
     return sorted(results, key=lambda x: x['current_aqi'], reverse=True)
 
 @app.post("/predict/manual", response_model=ManualResponse)
 def predict_manual(features: ManualFeatures):
     if model is None: raise HTTPException(status_code=503, detail="Model not loaded")
-    
     try:
         data = features.dict()
         df = pd.DataFrame([data])
         X = df[REQUIRED_FEATURES].values.astype(np.float32)
         X = np.nan_to_num(X, nan=0.0)
-        
         dmatrix = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
         raw_pred = float(model.predict(dmatrix)[0])
-        
         min_aqi = calculate_physics_min_aqi(features.pm2_5, features.pm10)
         final_aqi = max(raw_pred, min_aqi)
-        
         cat = aqi_category(final_aqi)
         
         return {
