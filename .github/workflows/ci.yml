@@ -47,10 +47,10 @@ jobs:
           fi
 
           # Check main API file
-          if [ -f "src/api/main.py" ]; then
+          if [ -f "src/main.py" ]; then
             echo "✓ API main file found"
           else
-            echo "✗ src/api/main.py missing"
+            echo "✗ src/main.py missing"
             exit 1
           fi
 
