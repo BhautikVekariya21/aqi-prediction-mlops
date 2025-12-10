@@ -1,6 +1,6 @@
 """
-AQI Prediction API - Ultra Lite (Session Optimized)
-Version: 1.7.0
+AQI Prediction API - Ultra Lite (Parallel Processing)
+Version: 1.8.0
 """
 
 import os
@@ -9,6 +9,7 @@ import sys
 import gzip
 import tempfile
 import time
+import concurrent.futures
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict
@@ -30,7 +31,7 @@ gc.collect()
 # =============================================================================
 
 MODEL_DIR = Path(".") 
-API_VERSION = "1.7.0"
+API_VERSION = "1.8.0"
 
 REQUIRED_FEATURES = [
     'wind_gusts_10m', 'week_of_year', 'state_encoded', 'pm2_5', 'sulphur_dioxide',
@@ -42,13 +43,13 @@ REQUIRED_FEATURES = [
     'dew_point_2m', 'cloud_cover_mid', 'wind_direction_10m'
 ]
 
-print("🚀 Starting AQI Prediction API (Session Optimized)...")
+print("🚀 Starting AQI Prediction API (Parallel Mode)...")
 
 # =============================================================================
-# GLOBAL SESSION (The Fix for Timeouts)
+# GLOBAL SESSION (Thread-Safe)
 # =============================================================================
-# We create one session to reuse connections for all 30 cities
 session = requests.Session()
+# Increase pool size to handle parallel requests
 adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
 session.mount('https://', adapter)
 
@@ -166,9 +167,8 @@ def fetch_data(lat: float, lon: float, days: int):
         aq_params["hourly"] = ["pm2_5", "pm10", "carbon_monoxide", "nitrogen_dioxide",
                                "sulphur_dioxide", "ozone", "dust", "aerosol_optical_depth"]
 
-        # USE GLOBAL SESSION (Reuse connection)
-        weather = session.get("https://api.open-meteo.com/v1/forecast", params=w_params, timeout=4).json()
-        air_quality = session.get("https://air-quality-api.open-meteo.com/v1/air-quality", params=aq_params, timeout=4).json()
+        weather = session.get("https://api.open-meteo.com/v1/forecast", params=w_params, timeout=5).json()
+        air_quality = session.get("https://air-quality-api.open-meteo.com/v1/air-quality", params=aq_params, timeout=5).json()
         
         return weather, air_quality
     except Exception as e:
@@ -374,41 +374,64 @@ def predict_city_aqi(city: str, days: int = 2):
         }
     }
 
+# =============================================================================
+# BULK PREDICT (THREADED PARALLEL PROCESSING)
+# =============================================================================
+def process_single_city(city_name: str) -> Optional[Dict]:
+    """Helper function to be run in parallel for each city"""
+    try:
+        city_info = CITIES[city_name]
+        # Fetch minimal data (1 day)
+        weather, air_quality = fetch_data(city_info['lat'], city_info['lon'], 1)
+        
+        if weather and air_quality:
+            df = prepare_features(weather, air_quality, city_name)
+            if df is not None and len(df) > 0:
+                # Quick Prediction for first hour only (current status)
+                current_row = df.iloc[[0]].copy() 
+                
+                # Apply simple physics floor to that single row
+                min_aqi = calculate_physics_min_aqi(current_row['pm2_5'].values[0], current_row['pm10'].values[0])
+                
+                # Convert to XGBoost format
+                X = current_row[REQUIRED_FEATURES].values.astype(np.float32)
+                X = np.nan_to_num(X, nan=0.0)
+                
+                # Predict
+                dmatrix = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
+                pred = float(model.predict(dmatrix)[0])
+                
+                final_aqi = max(pred, min_aqi)
+                cat = aqi_category(final_aqi)
+                
+                return {
+                    "city": city_name,
+                    "state": city_info['state'],
+                    "current_aqi": round(final_aqi, 1),
+                    "category": cat['cat'],
+                    "emoji": cat['emoji']
+                }
+    except Exception as e:
+        print(f"Error processing {city_name}: {e}")
+    return None
+
 @app.get("/predict/all/cities", response_model=List[CitySummary])
 def predict_all_cities():
+    """Fetches AQI for ALL supported cities concurrently."""
     if model is None: raise HTTPException(status_code=503, detail="Model not loaded")
     
     results = []
-    # Loop over all cities
-    for city_name in CITIES:
-        try:
-            city_info = CITIES[city_name]
-            # Use the global session (much faster)
-            weather, air_quality = fetch_data(city_info['lat'], city_info['lon'], 1)
-            
-            if weather and air_quality:
-                df = prepare_features(weather, air_quality, city_name)
-                if df is not None and len(df) > 0:
-                    current_row = df.iloc[[0]].copy() 
-                    min_aqi = calculate_physics_min_aqi(current_row['pm2_5'].values[0], current_row['pm10'].values[0])
-                    
-                    X = current_row[REQUIRED_FEATURES].values.astype(np.float32)
-                    X = np.nan_to_num(X, nan=0.0)
-                    pred = float(model.predict(xgb.DMatrix(X, feature_names=REQUIRED_FEATURES))[0])
-                    
-                    final_aqi = max(pred, min_aqi)
-                    cat = aqi_category(final_aqi)
-                    
-                    results.append({
-                        "city": city_name,
-                        "state": city_info['state'],
-                        "current_aqi": round(final_aqi, 1),
-                        "category": cat['cat'],
-                        "emoji": cat['emoji']
-                    })
-        except Exception as e:
-            print(f"Skipping {city_name}: {e}")
-            continue
+    
+    # Run 10 requests in parallel
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        # Submit all tasks
+        future_to_city = {executor.submit(process_single_city, city): city for city in CITIES}
+        
+        # Collect results as they finish
+        for future in concurrent.futures.as_completed(future_to_city):
+            data = future.result()
+            if data:
+                results.append(data)
 
     return sorted(results, key=lambda x: x['current_aqi'], reverse=True)
 
