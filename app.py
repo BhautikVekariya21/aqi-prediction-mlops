@@ -1,6 +1,6 @@
 """
-AQI Prediction API - Ultra Lite (No Scikit-Learn)
-Version: 1.4.0
+AQI Prediction API - Ultra Lite (Root Directory Fix)
+Version: 1.5.0
 """
 
 import os
@@ -28,8 +28,9 @@ gc.collect()
 # CONFIGURATION
 # =============================================================================
 
-MODEL_DIR = Path("models/optimized")
-API_VERSION = "1.4.0"
+# CHANGED: Look in current directory since files are in root
+MODEL_DIR = Path(".") 
+API_VERSION = "1.5.0"
 
 REQUIRED_FEATURES = [
     'wind_gusts_10m', 'week_of_year', 'state_encoded', 'pm2_5', 'sulphur_dioxide',
@@ -41,7 +42,7 @@ REQUIRED_FEATURES = [
     'dew_point_2m', 'cloud_cover_mid', 'wind_direction_10m'
 ]
 
-print("🚀 Starting AQI Prediction API (Ultra Lite)...")
+print("🚀 Starting AQI Prediction API (Root Fix)...")
 
 # =============================================================================
 # LOAD MODEL (JSON/GZIP ONLY)
@@ -51,13 +52,11 @@ print("📦 Loading model...")
 model = None
 
 try:
-    # We only look for the JSON model because loading PKL requires scikit-learn
-    # which causes the Out of Memory crash.
     gzip_path = MODEL_DIR / "model.json.gz"
     json_path = MODEL_DIR / "model.json"
 
     if gzip_path.exists():
-        print("✓ Found GZIP model...")
+        print(f"✓ Found GZIP model at {gzip_path}...")
         with gzip.open(gzip_path, 'rb') as f:
             model_bytes = f.read()
         
@@ -72,14 +71,14 @@ try:
         print("✓ Model loaded successfully")
         
     elif json_path.exists():
-        print("✓ Found JSON model...")
+        print(f"✓ Found JSON model at {json_path}...")
         model = xgb.Booster()
         model.load_model(str(json_path))
         print("✓ Model loaded successfully")
         
     else:
-        print("❌ CRITICAL: No model.json.gz found!")
-        print("   (The .pkl file is too heavy for the free server)")
+        print(f"❌ CRITICAL: No model file found in {MODEL_DIR.absolute()}")
+        print("   (Ensure model.json.gz is in the same folder as app.py)")
 
 except Exception as e:
     print(f"❌ Error loading model: {e}")
