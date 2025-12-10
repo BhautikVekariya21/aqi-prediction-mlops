@@ -4,75 +4,73 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'models/optimized/**'
+      - "models/optimized/**"
 
 jobs:
   validate-model:
-    name: Validate Optimized Model
+    name: Validate Model Files
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
-      
+        uses: actions/checkout@v4
+
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      
+
       - name: Install dependencies
-        # Added scikit-learn as it is usually required for reading pickle files
         run: |
-          pip install xgboost joblib scikit-learn
-      
-      - name: Check model files
+          pip install -q xgboost joblib scikit-learn
+
+      - name: Check model files exist
+        id: check_files
         run: |
-          echo "Checking model files..."
-          
-          # Check PKL model
+          echo "✓ Checking model files..."
+
+          # Check for PKL or JSON.gz and set environment variable for subsequent steps
           if [ -f "models/optimized/model_final.pkl" ]; then
             echo "✓ model_final.pkl found"
-            ls -lh models/optimized/model_final.pkl
+            echo "MODEL_FILE=models/optimized/model_final.pkl" >> $GITHUB_ENV
+          elif [ -f "models/optimized/model.json.gz" ]; then
+            echo "✓ model.json.gz found"
+            echo "MODEL_FILE=models/optimized/model.json.gz" >> $GITHUB_ENV
           else
-            echo "✗ model_final.pkl missing"
+            echo "✗ No model file found"
             exit 1
           fi
-          
-          # Check features
+
           if [ -f "models/optimized/features.txt" ]; then
-            echo "✓ features.txt found"
-            wc -l models/optimized/features.txt
+            FEATURE_COUNT=$(wc -l < models/optimized/features.txt)
+            echo "✓ Features file found ($FEATURE_COUNT features)"
           else
             echo "✗ features.txt missing"
             exit 1
           fi
-          
-          # Check metadata
-          if [ -f "models/optimized/model_metadata.json" ]; then
-            echo "✓ model_metadata.json found"
-            cat models/optimized/model_metadata.json
-          else
-            echo "⚠ model_metadata.json missing (optional)"
-          fi
-      
+
       - name: Test model loading
-        # Using 'shell: python' avoids quote escaping issues common with 'python -c'
-        shell: python
         run: |
+          python << 'EOF'
           import joblib
+          import xgboost as xgb
           import sys
           import os
 
-          print('Loading model...')
-          try:
-              # Ensure the path is correct relative to where the script runs
-              model_path = 'models/optimized/model_final.pkl'
-              if not os.path.exists(model_path):
-                  raise FileNotFoundError(f"{model_path} does not exist")
+          model_path = os.getenv('MODEL_FILE')
+          print(f'Attempting to load: {model_path}')
 
-              model = joblib.load(model_path)
-              print('✓ Model loaded successfully')
-              print(f'Model type: {type(model).__name__}')
+          try:
+              if model_path.endswith('.pkl'):
+                  model = joblib.load(model_path)
+                  print(f'✓ Pickle Model loaded: {type(model).__name__}')
+              elif model_path.endswith('.json.gz') or model_path.endswith('.json'):
+                  model = xgb.Booster()
+                  model.load_model(model_path)
+                  print(f'✓ XGBoost JSON Model loaded')
+              else:
+                  print('✗ Unknown model format')
+                  sys.exit(1)
           except Exception as e:
               print(f'✗ Failed to load model: {e}')
               sys.exit(1)
@@ -83,17 +81,25 @@ jobs:
                   features = [line.strip() for line in f.readlines()]
               print(f'✓ Features loaded: {len(features)} features')
           except Exception as e:
-              print(f'✗ Failed to load features: {e}')
+              print(f'✗ Failed to read features: {e}')
               sys.exit(1)
-      
+          EOF
+
       - name: Check model size
         run: |
-          SIZE=$(du -m models/optimized/model_final.pkl | cut -f1)
-          echo "Model size: ${SIZE}MB"
-          
-          if [ $SIZE -gt 50 ]; then
-            echo "⚠ Warning: Model size exceeds 50MB (${SIZE}MB)"
-            echo "Consider using model.json.gz for smaller size"
+          # Use the environment variable set in the first step
+          echo "Checking size for: $MODEL_FILE"
+
+          SIZE=$(du -m "$MODEL_FILE" | cut -f1)
+
+          if [ "$SIZE" -gt 0 ]; then
+            echo "Model size: ${SIZE}MB"
+            if [ "$SIZE" -gt 100 ]; then
+              echo "⚠ Warning: Large model (${SIZE}MB)"
+            else
+              echo "✓ Model size OK"
+            fi
           else
-            echo "✓ Model size is acceptable for Railway deployment"
+            echo "✗ Error reading file size"
+            exit 1
           fi

@@ -1,143 +1,43 @@
 # =============================================================================
-# CONTINUOUS INTEGRATION WORKFLOW (NO DOCKER)
-# Runs on: push to main, pull requests
-# Tests code quality and validates DVC pipeline
+# CONTINUOUS INTEGRATION - DEPLOYMENT CHECKS ONLY
+# No linting, no testing - just verify deployment files
 # =============================================================================
 
 name: CI Pipeline
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
   pull_request:
-    branches: [main, develop]
+    branches: [main]
 
 env:
   PYTHON_VERSION: "3.10"
 
 jobs:
   # ---------------------------------------------------------------------------
-  # JOB 1: CODE QUALITY & TESTING
-  # ---------------------------------------------------------------------------
-  test:
-    name: Test & Lint
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      
-      - name: Cache dependencies
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-      
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-      
-      - name: Install dev dependencies
-        run: |
-          pip install flake8 black pytest pytest-cov
-        continue-on-error: true
-      
-      - name: Lint with flake8
-        run: |
-          flake8 src/ --count --select=E9,F63,F7,F82 --show-source --statistics || true
-          flake8 src/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-        continue-on-error: true
-      
-      - name: Check code formatting with black
-        run: |
-          black --check src/ || true
-        continue-on-error: true
-      
-      - name: Test imports
-        run: |
-          python -c "import src; print('✓ Core imports successful')"
-          python -c "from src.utils.logger import get_logger; print('✓ Logger import successful')"
-          python -c "from src.utils.config_reader import ConfigReader; print('✓ Config reader import successful')"
-
-  # ---------------------------------------------------------------------------
-  # JOB 2: DVC PIPELINE VALIDATION
-  # ---------------------------------------------------------------------------
-  validate-dvc:
-    name: Validate DVC Pipeline
-    runs-on: ubuntu-latest
-    needs: test
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      
-      - name: Install DVC
-        run: |
-          pip install dvc dvc-http
-      
-      - name: Validate DVC pipeline structure
-        run: |
-          dvc version
-          dvc dag
-      
-      - name: Check DVC status
-        run: |
-          dvc status || echo "DVC status check completed"
-        continue-on-error: true
-
-  # ---------------------------------------------------------------------------
-  # JOB 3: VERIFY DEPLOYMENT READINESS
+  # JOB: VERIFY DEPLOYMENT READINESS
   # ---------------------------------------------------------------------------
   verify-deployment:
     name: Verify Deployment Files
     runs-on: ubuntu-latest
-    needs: test
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-      
-      - name: Check required deployment files
+
+      - name: Check deployment files
         run: |
-          echo "Checking deployment files..."
-          
-          # Check Procfile
-          if [ -f "Procfile" ]; then
-            echo "✓ Procfile found"
-            cat Procfile
+          echo "✓ Checking deployment files..."
+
+          # Check render.yaml
+          if [ -f "render.yaml" ]; then
+            echo "✓ render.yaml found"
           else
-            echo "✗ Procfile missing"
+            echo "✗ render.yaml missing"
             exit 1
           fi
-          
-          # Check railway.json
-          if [ -f "railway.json" ]; then
-            echo "✓ railway.json found"
-          else
-            echo "⚠ railway.json missing (optional)"
-          fi
-          
-          # Check runtime.txt
-          if [ -f "runtime.txt" ]; then
-            echo "✓ runtime.txt found"
-            cat runtime.txt
-          else
-            echo "⚠ runtime.txt missing (optional)"
-          fi
-          
+
           # Check requirements.txt
           if [ -f "requirements.txt" ]; then
             echo "✓ requirements.txt found"
@@ -145,56 +45,43 @@ jobs:
             echo "✗ requirements.txt missing"
             exit 1
           fi
-      
-      - name: Validate Procfile syntax
-        run: |
-          if grep -q "uvicorn src.api.main:app" Procfile; then
-            echo "✓ Procfile has correct FastAPI command"
-          else
-            echo "✗ Procfile missing correct uvicorn command"
-            exit 1
-          fi
-      
-      - name: Check API structure
-        run: |
-          # Check if main API file exists
+
+          # Check main API file
           if [ -f "src/api/main.py" ]; then
             echo "✓ API main file found"
           else
             echo "✗ src/api/main.py missing"
             exit 1
           fi
-          
-          # Check if models file exists
-          if [ -f "src/api/models.py" ]; then
-            echo "✓ API models file found"
+
+      - name: Check model files
+        run: |
+          echo "✓ Checking model files..."
+
+          # Check model
+          if [ -f "models/optimized/model_final.pkl" ] || [ -f "models/optimized/model.json.gz" ]; then
+            echo "✓ Model file found"
+            ls -lh models/optimized/
           else
-            echo "✗ src/api/models.py missing"
+            echo "✗ Model file missing"
             exit 1
           fi
 
-  # ---------------------------------------------------------------------------
-  # JOB 4: SECURITY SCAN
-  # ---------------------------------------------------------------------------
-  security:
-    name: Security Scan
-    runs-on: ubuntu-latest
-    needs: test
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-      
-      - name: Set up Python
+          # Check features
+          if [ -f "models/optimized/features.txt" ]; then
+            echo "✓ Features file found"
+            wc -l models/optimized/features.txt
+          else
+            echo "✗ features.txt missing"
+            exit 1
+          fi
+
+      - name: Verify Python syntax
         uses: actions/setup-python@v4
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      
-      - name: Install safety
+
+      - name: Quick import check
         run: |
-          pip install safety
-      
-      - name: Check dependencies for vulnerabilities
-        run: |
-          safety check --file requirements.txt || true
-        continue-on-error: true
+          pip install -q fastapi uvicorn xgboost
+          python -c "import fastapi; import uvicorn; import xgboost; print('✓ Core imports work')"

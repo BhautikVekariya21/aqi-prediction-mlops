@@ -1,14 +1,25 @@
+# =============================================================================
+# RENDER DEPLOYMENT CONFIGURATION
+# Auto-deploys from GitHub on push to main
+# =============================================================================
+
 services:
   - type: web
     name: aqi-prediction-api
     runtime: python
-    region: singapore
+    region: singapore # or oregon, frankfurt
     plan: free
+    branch: main
     buildCommand: pip install --no-cache-dir -r requirements.txt
     startCommand: uvicorn src.api.main:app --host 0.0.0.0 --port $PORT --workers 2
     healthCheckPath: /health
+    autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
         value: 3.10.12
       - key: PORT
         generateValue: true
+      - key: MODEL_PATH
+        value: models/optimized/model_final.pkl
+      - key: FEATURES_PATH
+        value: models/optimized/features.txt

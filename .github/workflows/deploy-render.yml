@@ -1,0 +1,46 @@
+# =============================================================================
+# DEPLOY TO RENDER
+# Auto-deploys on push to main
+# =============================================================================
+
+name: Deploy to Render
+
+on:
+    push:
+        branches:
+            - main
+    workflow_dispatch:
+
+jobs:
+    deploy:
+        name: Deploy to Render
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v3
+
+            - name: Verify deployment files
+              run: |
+                  echo "✓ Verifying files before deployment..."
+                  ls -la render.yaml requirements.txt src/api/main.py models/optimized/
+
+            - name: Trigger Render deployment
+              run: |
+                  echo "✓ Code pushed to GitHub"
+                  echo "✓ Render will auto-deploy from main branch"
+                  echo "✓ Monitor deployment at: https://dashboard.render.com"
+
+            - name: Deployment notification
+              run: |
+                  echo "================================================"
+                  echo "✓ Deployment triggered successfully!"
+                  echo "================================================"
+                  echo ""
+                  echo "Commit: ${{ github.sha }}"
+                  echo "Branch: ${{ github.ref_name }}"
+                  echo "Author: ${{ github.actor }}"
+                  echo ""
+                  echo "Check deployment status:"
+                  echo "https://dashboard.render.com"
+                  echo ""
