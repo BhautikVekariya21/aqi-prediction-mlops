@@ -53,9 +53,26 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          echo "🚀 Uploading files to Hugging Face Space..."
+          echo "🚀 Uploading files via Python API..."
 
-          # FIX: Run via python module to avoid 'command not found' error
-          python -m huggingface_hub.cli upload $HF_USERNAME/$HF_SPACE_NAME . . --repo-type space --token $HF_TOKEN --exclude ".git/*" ".github/*"
+          # Using Python directly avoids all CLI/PATH issues
+          python -c "
+          from huggingface_hub import HfApi
+          import os
 
-          echo "✅ Deployed successfully!"
+          api = HfApi()
+          username = os.environ['HF_USERNAME']
+          space_name = os.environ['HF_SPACE_NAME']
+          token = os.environ['HF_TOKEN']
+
+          print(f'Uploading to spaces/{username}/{space_name}...')
+
+          api.upload_folder(
+              folder_path='.',
+              repo_id=f'{username}/{space_name}',
+              repo_type='space',
+              token=token,
+              ignore_patterns=['.git/*', '.github/*']
+          )
+          print('✅ Upload complete!')
+          "
