@@ -12,3 +12,5 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.10.12
+      - key: WEB_CONCURRENCY
+        value: "1"
