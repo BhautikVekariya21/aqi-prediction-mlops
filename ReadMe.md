@@ -1,6 +1,3 @@
-Here is the comprehensive and final version of your `README.md` with all the technical depth and features we implemented.
-
-````markdown
 # 🌍 AQI Prediction MLOps (Ultra-Lite & Physics-Aware)
 
 [![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/downloads/release/python-3100/)
@@ -9,51 +6,61 @@ Here is the comprehensive and final version of your `README.md` with all the tec
 [![XGBoost](https://img.shields.io/badge/XGBoost-Optimized-red)](https://xgboost.readthedocs.io/)
 [![Docker](https://img.shields.io/badge/Docker-Container-blue)](https://www.docker.com/)
 
-A production-grade, memory-optimized Air Quality Index (AQI) prediction API for 30 Indian cities. Deployed on **Hugging Face Spaces** using a robust MLOps pipeline with **GitHub Actions**.
+A production-grade, memory-optimized Air Quality Index (AQI) prediction API for **30 Indian cities**.  
+Deployed on **Hugging Face Spaces** with an MLOps pipeline powered by **GitHub Actions**.
 
-🔗 **Live API:** [https://bhautikvekariya21-aqi-prediction-mlops.hf.space/docs](https://bhautikvekariya21-aqi-prediction-mlops.hf.space/docs)
+🔗 **Live API:**  
+➡ https://bhautikvekariya21-aqi-prediction-mlops.hf.space/docs
 
 ---
 
 ## ⚡ Key Features & Engineering
 
 ### 🚀 Ultra-Lite Architecture
-- **Memory Optimization:** Replaced heavy dependencies (Scikit-learn, Joblib, SciPy) with **native XGBoost** loading and standard Python libraries.
-- **RAM Usage:** Reduced memory footprint by **~70%**, enabling deployment on free-tier containers (512MB - 1GB RAM) without OOM crashes.
-- **Model Compression:** Uses `JSON.GZ` format (~72MB) instead of Pickle (~200MB+), significantly speeding up cold starts.
+- Removed heavy ML stack (Scikit-learn, Joblib, SciPy)
+- **RAM usage ↓ ~70%**
+- Uses **JSON.GZ model** (~72MB instead of 200MB+ Pickle)
 
 ### ⚡ High-Performance Computing
-- **Parallel Bulk Prediction:** Implements `concurrent.futures.ThreadPoolExecutor` to fetch and predict AQI for all 30 cities simultaneously.
-  - *Result:* Bulk prediction time reduced from **~30s to <3s**.
-- **Connection Pooling:** Uses a global `requests.Session` with an optimized HTTP adapter to reuse SSL connections, preventing timeouts during high-load forecasting.
+- **Parallel bulk prediction** (`ThreadPoolExecutor`)
+  - ⏱ ~30s → **<3s**
+- **Connection pooling** → no timeout under load
 
-### 🧠 Physics-Aware Logic (Hybrid AI)
-- **Physics Floor:** The model includes a safety layer that prevents under-prediction during extreme pollution events.
-  - *Logic:* If `PM2.5 > 350` (Severe), the system overrides the ML output with a physics-based minimum AQI to ensure safety.
-- **Dynamic Winter Calibration:** Automatically detects "Winter" months (Oct-Feb) and applies multipliers to account for thermal inversion and wind stagnation, which pure ML models often miss.
+### 🧠 Physics-Aware Logic
+- **AQI safety floor** when pollution > Severe category
+- **Winter calibration** (Oct–Feb) to account for thermal inversion
 
 ---
 
 ## 📡 API Endpoints
 
-### 1. Predict City AQI (Auto-Fetch)
-Fetches real-time weather & pollution data from Open-Meteo and returns an hourly AQI forecast.
+### 1️⃣ Predict City AQI (Auto-Fetch)
+Fetches real-time weather + pollution.
 
-- **URL:** `GET /predict/{city}`
-- **Parameters:** `days` (default: 2, max: 5)
-- **Example:** `https://bhautikvekariya21-aqi-prediction-mlops.hf.space/predict/Delhi?days=3`
+| Method | Endpoint | Params |
+|--------|----------|--------|
+| GET | `/predict/{city}` | `days` → default=2, max=5 |
 
-### 2. Bulk Prediction (All Cities)
-Returns a sorted list of AQI for all 30 supported cities. Ideal for "National Status" dashboards.
+Example:
+```
+https://bhautikvekariya21-aqi-prediction-mlops.hf.space/predict/Delhi?days=3
+```
 
-- **URL:** `GET /predict/all/cities`
-- **Performance:** <3 seconds response time.
+---
 
-### 3. Manual Prediction (Simulation)
-Allows testing specific scenarios (e.g., "What if PM2.5 hits 500?") by accepting raw feature values.
+### 2️⃣ Bulk Prediction (All Cities)
+| Method | Endpoint | Performance |
+|--------|----------|-------------|
+| GET | `/predict/all/cities` | <3 seconds |
 
-- **URL:** `POST /predict/manual`
-- **Payload Example:**
+---
+
+### 3️⃣ Manual Prediction (Simulation Mode)
+| Method | Endpoint |
+|--------|----------|
+| POST | `/predict/manual` |
+
+Example:
 ```json
 {
   "pm2_5": 355.0,
@@ -61,119 +68,108 @@ Allows testing specific scenarios (e.g., "What if PM2.5 hits 500?") by accepting
   "nitrogen_dioxide": 65.0,
   "wind_speed_10m": 5.0,
   "is_weekend": 1,
-  "month": 11,
-  ... (see docs for full list)
+  "month": 11
 }
-````
+```
 
-### 4\. Health Check
+---
 
-Verifies model status and current memory mode.
+### 4️⃣ Health Check
 
-  - **URL:** `GET /health`
+| Method | Endpoint  |
+| ------ | --------- |
+| GET    | `/health` |
 
------
+---
 
 ## 🛠️ Tech Stack
 
-| Component | Technology | Description |
-| :--- | :--- | :--- |
-| **Framework** | FastAPI (Python 3.10) | High-performance async API |
-| **Model** | XGBoost (Booster) | Gradient Boosting Decision Tree |
-| **Data Source** | Open-Meteo APIs | Historical Weather & Air Quality API |
-| **Container** | Docker | Slim Debian-based Python image |
-| **CI/CD** | GitHub Actions | Automated Testing & Deployment |
-| **Deployment** | Hugging Face Spaces | 2 vCPU, 16GB RAM Container |
+| Component   | Technology          | Purpose                    |
+| ----------- | ------------------- | -------------------------- |
+| Framework   | FastAPI             | Async API                  |
+| Model       | XGBoost Booster     | Optimized AQI model        |
+| Data Source | Open-Meteo          | Live air quality & weather |
+| Container   | Docker Slim         | Lightweight deployment     |
+| CI/CD       | GitHub Actions      | Auto testing + deploy      |
+| Deployment  | Hugging Face Spaces | Free cloud GPU/CPU         |
 
------
+---
 
 ## 📂 Project Structure
 
 ```bash
 .
 ├── .github/workflows/
-│   └── ci.yml              # CI/CD: Automated deployment pipeline
+│   └── ci.yml
 ├── models/
 │   └── optimized/
-│       └── features.txt    # List of 31 input features required by the model
-├── app.py                  # Main API Application (FastAPI + Business Logic)
-├── Dockerfile              # Docker configuration for Hugging Face
-├── model.json.gz           # Compressed XGBoost Model (~72MB)
-├── requirements.txt        # Lite dependencies (No sklearn/scipy)
-└── README.md               # Project Documentation
+│       └── features.txt
+├── app.py
+├── Dockerfile
+├── model.json.gz
+├── requirements.txt
+└── README.md
 ```
 
------
+---
 
-## 🚀 Local Setup & Installation
+## 🚀 Local Setup
 
-### 1\. Clone the Repository
+### 1️⃣ Clone Repo
 
 ```bash
-git clone [https://github.com/BhautikVekariya21/aqi-prediction-mlops.git](https://github.com/BhautikVekariya21/aqi-prediction-mlops.git)
+git clone https://github.com/BhautikVekariya21/aqi-prediction-mlops.git
 cd aqi-prediction-mlops
 ```
 
-### 2\. Install Dependencies
+### 2️⃣ Install Dependencies
 
 ```bash
-# Create a virtual environment (recommended)
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate         # Linux/Mac
+venv\Scripts\activate            # Windows
 
-# Install lite dependencies
 pip install -r requirements.txt
 ```
 
-### 3\. Run the Server
+### 3️⃣ Run API
 
 ```bash
 uvicorn app:app --reload
 ```
 
-### 4\. Test the API
+Swagger UI → http://localhost:8000/docs
 
-Open your browser and navigate to:
-`http://localhost:8000/docs`
-
------
+---
 
 ## 🔄 CI/CD Pipeline (GitHub Actions)
 
-This project utilizes a custom **GitHub Actions workflow** to bypass standard Git LFS limitations on Hugging Face.
+✔ Auto triggered on **main** branch  
+✔ Validates required files  
+✔ Automatically relocates model if nested  
+✔ Uploads to Hugging Face using APIs (no git-LFS issues)
 
-1.  **Trigger:** Pushes to the `main` branch.
-2.  **Validation:** Verifies critical files (`app.py`, `Dockerfile`, `model.json.gz`).
-3.  **Preparation:** Automatically moves the model file to the root directory if it's nested, ensuring the container finds it.
-4.  **Deployment:** Uses the `huggingface_hub` Python library to perform a direct API upload, handling large files robustly without timeout errors.
+🔐 Required Secret:
+- `HF_TOKEN` → Hugging Face Write Token
 
-**Secrets Required:**
+---
 
-  - `HF_TOKEN`: Hugging Face Write Access Token (Stored in GitHub Secrets).
+## 📊 Supported Cities
 
------
+| State       | City                     | State          | City      |
+| ----------- | ------------------------ | -------------- | --------- |
+| Delhi       | Delhi                    | Maharashtra    | Mumbai    |
+| Karnataka   | Bengaluru                | West Bengal    | Kolkata   |
+| Tamil Nadu  | Chennai                  | Telangana      | Hyderabad |
+| Gujarat     | Ahmedabad                | Uttar Pradesh  | Lucknow   |
+| Rajasthan   | Jaipur                   | Bihar          | Patna     |
+| Punjab      | Chandigarh               | Madhya Pradesh | Bhopal    |
+| Kerala      | Thiruvananthapuram       | Assam          | Guwahati  |
+| Odisha      | Bhubaneswar              | Uttarakhand    | Dehradun  |
+| ...and more | (See `/cities` endpoint) |                |           |
 
-## 📊 Supported Cities (29 Major Hubs)
-
-The model is trained and calibrated for these specific locations:
-
-| State | City | State | City |
-| :--- | :--- | :--- | :--- |
-| Delhi | Delhi | Maharashtra | Mumbai |
-| Karnataka | Bengaluru | Kolkata |
-| Tamil Nadu | Chennai | Telangana | Hyderabad |
-| Gujarat | Ahmedabad | Uttar Pradesh | Lucknow |
-| Rajasthan | Jaipur | Bihar | Patna |
-| Punjab | Chandigarh | Madhya Pradesh | Bhopal |
-| Kerala | Thiruvananthapuram | Assam | Guwahati |
-| Odisha | Bhubaneswar | Uttarakhand | Dehradun |
-| ...and more | (See `/cities` endpoint) | | |
-
------
+---
 
 ## 📝 License
 
-This project is licensed under the MIT License.
-
-```
-```
+Released under the **MIT License**.
