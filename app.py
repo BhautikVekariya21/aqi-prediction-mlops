@@ -1,6 +1,6 @@
 """
-AQI Prediction API - Ultra Lite (Manual + Bulk Prediction Support)
-Version: 1.6.0
+AQI Prediction API - Ultra Lite (Session Optimized)
+Version: 1.7.0
 """
 
 import os
@@ -30,7 +30,7 @@ gc.collect()
 # =============================================================================
 
 MODEL_DIR = Path(".") 
-API_VERSION = "1.6.0"
+API_VERSION = "1.7.0"
 
 REQUIRED_FEATURES = [
     'wind_gusts_10m', 'week_of_year', 'state_encoded', 'pm2_5', 'sulphur_dioxide',
@@ -42,7 +42,15 @@ REQUIRED_FEATURES = [
     'dew_point_2m', 'cloud_cover_mid', 'wind_direction_10m'
 ]
 
-print("🚀 Starting AQI Prediction API (Manual + Bulk Support)...")
+print("🚀 Starting AQI Prediction API (Session Optimized)...")
+
+# =============================================================================
+# GLOBAL SESSION (The Fix for Timeouts)
+# =============================================================================
+# We create one session to reuse connections for all 30 cities
+session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
+session.mount('https://', adapter)
 
 # =============================================================================
 # LOAD MODEL (JSON/GZIP ONLY)
@@ -158,9 +166,9 @@ def fetch_data(lat: float, lon: float, days: int):
         aq_params["hourly"] = ["pm2_5", "pm10", "carbon_monoxide", "nitrogen_dioxide",
                                "sulphur_dioxide", "ozone", "dust", "aerosol_optical_depth"]
 
-        with requests.Session() as s:
-            weather = s.get("https://api.open-meteo.com/v1/forecast", params=w_params, timeout=5).json()
-            air_quality = s.get("https://air-quality-api.open-meteo.com/v1/air-quality", params=aq_params, timeout=5).json()
+        # USE GLOBAL SESSION (Reuse connection)
+        weather = session.get("https://api.open-meteo.com/v1/forecast", params=w_params, timeout=4).json()
+        air_quality = session.get("https://air-quality-api.open-meteo.com/v1/air-quality", params=aq_params, timeout=4).json()
         
         return weather, air_quality
     except Exception as e:
@@ -182,7 +190,10 @@ def prepare_features(weather: Dict, air_quality: Dict, city: str) -> Optional[pd
     if n_hours == 0: return None
     
     rows = []
-    for i in range(n_hours):
+    # Only process first 24 hours to save RAM/Time if doing bulk
+    limit = n_hours if n_hours < 48 else 48 
+    
+    for i in range(limit):
         try:
             dt = pd.to_datetime(weather_hourly['time'][i])
             row = {
@@ -234,7 +245,6 @@ class PredictionResponse(BaseModel):
     success: bool; city: str; state: str; coordinates: Dict; forecast_days: int
     generated_at: str; hourly: List[HourlyForecast]; daily: List[DailySummary]; summary: Dict
 
-# NEW: Manual Feature Input Model
 class ManualFeatures(BaseModel):
     pm2_5: float; pm10: float; nitrogen_dioxide: float; sulphur_dioxide: float
     ozone: float; carbon_monoxide: float; dust: float; aerosol_optical_depth: float
@@ -278,9 +288,6 @@ def health_check():
     if model is None: raise HTTPException(status_code=503, detail="Model not loaded")
     return {"status": "healthy", "mode": "ultra_lite"}
 
-# -----------------------------------------------------------------------------
-# 1. AUTO PREDICT (SINGLE CITY)
-# -----------------------------------------------------------------------------
 @app.get("/predict/{city}", response_model=PredictionResponse)
 def predict_city_aqi(city: str, days: int = 2):
     if city not in CITIES: raise HTTPException(status_code=400, detail="City not found")
@@ -328,7 +335,7 @@ def predict_city_aqi(city: str, days: int = 2):
         final_aqi.append(max(float(pred), min_aqi))
     df['aqi'] = final_aqi
     
-    # Response Construction
+    # Response
     hourly_forecast = []
     for _, row in df.iterrows():
         cat = aqi_category(row['aqi'])
@@ -367,29 +374,22 @@ def predict_city_aqi(city: str, days: int = 2):
         }
     }
 
-# -----------------------------------------------------------------------------
-# 2. BULK PREDICT (ALL CITIES)
-# -----------------------------------------------------------------------------
 @app.get("/predict/all/cities", response_model=List[CitySummary])
 def predict_all_cities():
-    """Fetches AQI for ALL supported cities. NOTE: This may take 5-10 seconds."""
     if model is None: raise HTTPException(status_code=503, detail="Model not loaded")
     
     results = []
-    # Loop efficiently (Limit to 1 day to be fast)
+    # Loop over all cities
     for city_name in CITIES:
         try:
             city_info = CITIES[city_name]
-            # Fetch minimal data (1 day)
+            # Use the global session (much faster)
             weather, air_quality = fetch_data(city_info['lat'], city_info['lon'], 1)
             
             if weather and air_quality:
                 df = prepare_features(weather, air_quality, city_name)
                 if df is not None and len(df) > 0:
-                    # Quick Prediction for first hour only (current status)
                     current_row = df.iloc[[0]].copy() 
-                    
-                    # Apply simple physics floor to that single row
                     min_aqi = calculate_physics_min_aqi(current_row['pm2_5'].values[0], current_row['pm10'].values[0])
                     
                     X = current_row[REQUIRED_FEATURES].values.astype(np.float32)
@@ -412,27 +412,19 @@ def predict_all_cities():
 
     return sorted(results, key=lambda x: x['current_aqi'], reverse=True)
 
-# -----------------------------------------------------------------------------
-# 3. MANUAL PREDICT (RAW FEATURES)
-# -----------------------------------------------------------------------------
 @app.post("/predict/manual", response_model=ManualResponse)
 def predict_manual(features: ManualFeatures):
     if model is None: raise HTTPException(status_code=503, detail="Model not loaded")
     
     try:
-        # Convert Pydantic to DataFrame
         data = features.dict()
         df = pd.DataFrame([data])
-        
-        # Ensure column order
         X = df[REQUIRED_FEATURES].values.astype(np.float32)
         X = np.nan_to_num(X, nan=0.0)
         
-        # Predict
         dmatrix = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
         raw_pred = float(model.predict(dmatrix)[0])
         
-        # Physics Floor
         min_aqi = calculate_physics_min_aqi(features.pm2_5, features.pm10)
         final_aqi = max(raw_pred, min_aqi)
         
