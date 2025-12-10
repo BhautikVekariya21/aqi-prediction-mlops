@@ -23,7 +23,7 @@ jobs:
             - name: Verify deployment files
               run: |
                   echo "✓ Verifying files before deployment..."
-                  ls -la render.yaml requirements.txt src/main.py models/optimized/
+                  ls -la render.yaml requirements.txt app.py models/optimized/
 
             - name: Trigger Render deployment
               run: |

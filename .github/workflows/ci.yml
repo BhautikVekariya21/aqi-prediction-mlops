@@ -46,11 +46,11 @@ jobs:
             exit 1
           fi
 
-          # Check main API file
-          if [ -f "src/main.py" ]; then
-            echo "✓ API main file found"
+          # Check main API file (Renamed to app.py in root)
+          if [ -f "app.py" ]; then
+            echo "✓ API main file (app.py) found"
           else
-            echo "✗ src/main.py missing"
+            echo "✗ app.py missing in root directory"
             exit 1
           fi
 
