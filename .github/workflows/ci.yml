@@ -1,40 +1,41 @@
-# =============================================================================
-# CONTINUOUS INTEGRATION - DEPLOYMENT CHECKS ONLY
-# No linting, no testing - just verify deployment files
-# =============================================================================
-
-name: CI Pipeline
+name: CI/CD Pipeline
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 env:
   PYTHON_VERSION: "3.10"
+  # Replace 'bhautikvekariya21' with your HF username and 'aqi-prediction-mlops' with your Space name
+  HF_USERNAME: "bhautikvekariya21"
+  HF_SPACE_NAME: "aqi-prediction-mlops"
 
 jobs:
   # ---------------------------------------------------------------------------
-  # JOB: VERIFY DEPLOYMENT READINESS
+  # JOB 1: VERIFY FILES (CI)
   # ---------------------------------------------------------------------------
   verify-deployment:
-    name: Verify Deployment Files
+    name: Verify Files
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          lfs: true # Important for large model files
 
-      - name: Check deployment files
+      - name: Check essential files
         run: |
           echo "✓ Checking deployment files..."
 
-          # Check render.yaml
-          if [ -f "render.yaml" ]; then
-            echo "✓ render.yaml found"
+          # Check Dockerfile (Required for Hugging Face)
+          if [ -f "Dockerfile" ]; then
+            echo "✓ Dockerfile found"
           else
-            echo "✗ render.yaml missing"
+            echo "✗ Dockerfile missing"
             exit 1
           fi
 
@@ -46,11 +47,11 @@ jobs:
             exit 1
           fi
 
-          # Check main API file (Renamed to app.py in root)
+          # Check main API file (app.py)
           if [ -f "app.py" ]; then
-            echo "✓ API main file (app.py) found"
+            echo "✓ app.py found"
           else
-            echo "✗ app.py missing in root directory"
+            echo "✗ app.py missing"
             exit 1
           fi
 
@@ -58,30 +59,47 @@ jobs:
         run: |
           echo "✓ Checking model files..."
 
-          # Check model
-          if [ -f "models/optimized/model_final.pkl" ] || [ -f "models/optimized/model.json.gz" ]; then
-            echo "✓ Model file found"
-            ls -lh models/optimized/
+          # Check for model in root (where your code expects it now)
+          if [ -f "model.json.gz" ]; then
+             echo "✓ model.json.gz found in root"
+          elif [ -f "models/optimized/model.json.gz" ]; then
+             echo "✓ model.json.gz found in models/optimized/"
           else
-            echo "✗ Model file missing"
-            exit 1
+             echo "✗ No model file found!"
+             exit 1
           fi
 
-          # Check features
-          if [ -f "models/optimized/features.txt" ]; then
-            echo "✓ Features file found"
-            wc -l models/optimized/features.txt
-          else
-            echo "✗ features.txt missing"
-            exit 1
-          fi
+  # ---------------------------------------------------------------------------
+  # JOB 2: DEPLOY TO HUGGING FACE (CD)
+  # ---------------------------------------------------------------------------
+  deploy-to-hf:
+    name: Deploy to Hugging Face
+    needs: verify-deployment
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' # Only deploy on push to main
 
-      - name: Verify Python syntax
-        uses: actions/setup-python@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          fetch-depth: 0
+          lfs: true
 
-      - name: Quick import check
+      - name: Push to Hugging Face Hub
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pip install -q fastapi uvicorn xgboost
-          python -c "import fastapi; import uvicorn; import xgboost; print('✓ Core imports work')"
+          echo "🚀 Pushing to Hugging Face Space..."
+
+          # 1. Install git-lfs
+          git lfs install
+
+          # 2. Add Hugging Face remote
+          # Using the token directly in the URL for authentication
+          git remote add space https://$HF_USERNAME:$HF_TOKEN@huggingface.co/spaces/$HF_USERNAME/$HF_SPACE_NAME
+
+          # 3. Force push main branch to the Space
+          # We use --force to overwrite the Space with exactly what is in GitHub
+          git push --force space main
+
+          echo "✅ Deployed successfully!"
