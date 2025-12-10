@@ -1,12 +1,11 @@
 services:
   - type: web
-    name: aqi-prediction-api
+    name: aqi-prediction-mlops
     runtime: python
     region: singapore
     plan: free
+    branch: main
     buildCommand: pip install --no-cache-dir -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn src.api.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
-    envVars:
-      - key: PORT
-        value: 10000
+    autoDeploy: true
