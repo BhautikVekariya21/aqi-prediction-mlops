@@ -29,13 +29,12 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install dependencies
+      - name: Install Hugging Face Hub
         run: pip install huggingface_hub
 
       - name: Prepare Files (Move Model to Root)
         run: |
           # 1. Check if model exists in the subfolder and move it to root
-          # This aligns your GitHub structure with what your app.py expects
           if [ -f "models/optimized/model.json.gz" ]; then
             echo "📦 Moving model from subfolder to root..."
             mv models/optimized/model.json.gz .
@@ -56,7 +55,7 @@ jobs:
         run: |
           echo "🚀 Uploading files to Hugging Face Space..."
 
-          # This python command handles large files correctly
-          huggingface-cli upload $HF_USERNAME/$HF_SPACE_NAME . . --repo-type space --token $HF_TOKEN --exclude ".git/*" ".github/*"
+          # FIX: Run via python module to avoid 'command not found' error
+          python -m huggingface_hub.cli upload $HF_USERNAME/$HF_SPACE_NAME . . --repo-type space --token $HF_TOKEN --exclude ".git/*" ".github/*"
 
           echo "✅ Deployed successfully!"
