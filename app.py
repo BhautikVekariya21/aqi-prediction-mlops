@@ -1,6 +1,6 @@
 """
-AQI Prediction API - Ultra Lite (Root Directory Fix)
-Version: 1.5.0
+AQI Prediction API - Ultra Lite (Manual + Bulk Prediction Support)
+Version: 1.6.0
 """
 
 import os
@@ -8,6 +8,7 @@ import gc
 import sys
 import gzip
 import tempfile
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict
@@ -28,9 +29,8 @@ gc.collect()
 # CONFIGURATION
 # =============================================================================
 
-# CHANGED: Look in current directory since files are in root
 MODEL_DIR = Path(".") 
-API_VERSION = "1.5.0"
+API_VERSION = "1.6.0"
 
 REQUIRED_FEATURES = [
     'wind_gusts_10m', 'week_of_year', 'state_encoded', 'pm2_5', 'sulphur_dioxide',
@@ -42,7 +42,7 @@ REQUIRED_FEATURES = [
     'dew_point_2m', 'cloud_cover_mid', 'wind_direction_10m'
 ]
 
-print("🚀 Starting AQI Prediction API (Root Fix)...")
+print("🚀 Starting AQI Prediction API (Manual + Bulk Support)...")
 
 # =============================================================================
 # LOAD MODEL (JSON/GZIP ONLY)
@@ -78,7 +78,6 @@ try:
         
     else:
         print(f"❌ CRITICAL: No model file found in {MODEL_DIR.absolute()}")
-        print("   (Ensure model.json.gz is in the same folder as app.py)")
 
 except Exception as e:
     print(f"❌ Error loading model: {e}")
@@ -146,7 +145,7 @@ def calculate_physics_min_aqi(pm2_5: float, pm10: float) -> float:
 
 def fetch_data(lat: float, lon: float, days: int):
     try:
-        # Reduced timeout to prevent hanging connections
+        # Reduced timeout and specific params
         params = {"latitude": lat, "longitude": lon, "timezone": "Asia/Kolkata", "forecast_days": days}
         
         w_params = params.copy()
@@ -159,10 +158,9 @@ def fetch_data(lat: float, lon: float, days: int):
         aq_params["hourly"] = ["pm2_5", "pm10", "carbon_monoxide", "nitrogen_dioxide",
                                "sulphur_dioxide", "ozone", "dust", "aerosol_optical_depth"]
 
-        # Using a session for connection pooling efficiency
         with requests.Session() as s:
-            weather = s.get("https://api.open-meteo.com/v1/forecast", params=w_params, timeout=8).json()
-            air_quality = s.get("https://air-quality-api.open-meteo.com/v1/air-quality", params=aq_params, timeout=8).json()
+            weather = s.get("https://api.open-meteo.com/v1/forecast", params=w_params, timeout=5).json()
+            air_quality = s.get("https://air-quality-api.open-meteo.com/v1/air-quality", params=aq_params, timeout=5).json()
         
         return weather, air_quality
     except Exception as e:
@@ -221,7 +219,7 @@ def prepare_features(weather: Dict, air_quality: Dict, city: str) -> Optional[pd
     return pd.DataFrame(rows) if rows else None
 
 # =============================================================================
-# API MODELS & ENDPOINTS
+# API MODELS
 # =============================================================================
 
 class HourlyForecast(BaseModel):
@@ -235,6 +233,28 @@ class DailySummary(BaseModel):
 class PredictionResponse(BaseModel):
     success: bool; city: str; state: str; coordinates: Dict; forecast_days: int
     generated_at: str; hourly: List[HourlyForecast]; daily: List[DailySummary]; summary: Dict
+
+# NEW: Manual Feature Input Model
+class ManualFeatures(BaseModel):
+    pm2_5: float; pm10: float; nitrogen_dioxide: float; sulphur_dioxide: float
+    ozone: float; carbon_monoxide: float; dust: float; aerosol_optical_depth: float
+    wind_speed_10m: float; wind_gusts_10m: float; wind_direction_10m: float
+    relative_humidity_2m: float; dew_point_2m: float; surface_pressure: float
+    pressure_msl: float; cloud_cover: float; cloud_cover_low: float
+    cloud_cover_mid: float; cloud_cover_high: float; is_day: int
+    latitude: float; longitude: float; city_encoded: int; state_encoded: int
+    year: int; month: int; day: int; hour: int; quarter: int
+    week_of_year: int; is_weekend: int
+
+class ManualResponse(BaseModel):
+    aqi: float; category: str; emoji: str; color: str; physics_floor_applied: bool
+
+class CitySummary(BaseModel):
+    city: str; state: str; current_aqi: float; category: str; emoji: str
+
+# =============================================================================
+# API ENDPOINTS
+# =============================================================================
 
 app = FastAPI(title="AQI Prediction API", version=API_VERSION)
 
@@ -258,6 +278,9 @@ def health_check():
     if model is None: raise HTTPException(status_code=503, detail="Model not loaded")
     return {"status": "healthy", "mode": "ultra_lite"}
 
+# -----------------------------------------------------------------------------
+# 1. AUTO PREDICT (SINGLE CITY)
+# -----------------------------------------------------------------------------
 @app.get("/predict/{city}", response_model=PredictionResponse)
 def predict_city_aqi(city: str, days: int = 2):
     if city not in CITIES: raise HTTPException(status_code=400, detail="City not found")
@@ -293,7 +316,7 @@ def predict_city_aqi(city: str, days: int = 2):
                 df.at[idx, 'wind_speed_10m'] = raw_wind * wind_correction
                 if active_factor > 1.5: df.at[idx, 'nitrogen_dioxide'] = df.at[idx, 'nitrogen_dioxide'] * 1.3
 
-    # Prediction (XGBoost Native)
+    # Prediction
     X = df[REQUIRED_FEATURES].values.astype(np.float32)
     X = np.nan_to_num(X, nan=0.0)
     dmatrix = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
@@ -305,7 +328,7 @@ def predict_city_aqi(city: str, days: int = 2):
         final_aqi.append(max(float(pred), min_aqi))
     df['aqi'] = final_aqi
     
-    # Formatting
+    # Response Construction
     hourly_forecast = []
     for _, row in df.iterrows():
         cat = aqi_category(row['aqi'])
@@ -330,10 +353,7 @@ def predict_city_aqi(city: str, days: int = 2):
     
     avg_aqi = float(np.mean(final_aqi))
     o_cat = aqi_category(avg_aqi)
-    
-    # Aggressive Cleanup
-    del df, X, dmatrix, raw_predictions, final_aqi
-    gc.collect()
+    del df, X, dmatrix, raw_predictions, final_aqi; gc.collect()
 
     return {
         "success": True, "city": city, "state": city_info['state'],
@@ -346,6 +366,87 @@ def predict_city_aqi(city: str, days: int = 2):
             "emoji": o_cat["emoji"], "color": o_cat["color"], "total_hours": len(hourly_forecast)
         }
     }
+
+# -----------------------------------------------------------------------------
+# 2. BULK PREDICT (ALL CITIES)
+# -----------------------------------------------------------------------------
+@app.get("/predict/all/cities", response_model=List[CitySummary])
+def predict_all_cities():
+    """Fetches AQI for ALL supported cities. NOTE: This may take 5-10 seconds."""
+    if model is None: raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    results = []
+    # Loop efficiently (Limit to 1 day to be fast)
+    for city_name in CITIES:
+        try:
+            city_info = CITIES[city_name]
+            # Fetch minimal data (1 day)
+            weather, air_quality = fetch_data(city_info['lat'], city_info['lon'], 1)
+            
+            if weather and air_quality:
+                df = prepare_features(weather, air_quality, city_name)
+                if df is not None and len(df) > 0:
+                    # Quick Prediction for first hour only (current status)
+                    current_row = df.iloc[[0]].copy() 
+                    
+                    # Apply simple physics floor to that single row
+                    min_aqi = calculate_physics_min_aqi(current_row['pm2_5'].values[0], current_row['pm10'].values[0])
+                    
+                    X = current_row[REQUIRED_FEATURES].values.astype(np.float32)
+                    X = np.nan_to_num(X, nan=0.0)
+                    pred = float(model.predict(xgb.DMatrix(X, feature_names=REQUIRED_FEATURES))[0])
+                    
+                    final_aqi = max(pred, min_aqi)
+                    cat = aqi_category(final_aqi)
+                    
+                    results.append({
+                        "city": city_name,
+                        "state": city_info['state'],
+                        "current_aqi": round(final_aqi, 1),
+                        "category": cat['cat'],
+                        "emoji": cat['emoji']
+                    })
+        except Exception as e:
+            print(f"Skipping {city_name}: {e}")
+            continue
+
+    return sorted(results, key=lambda x: x['current_aqi'], reverse=True)
+
+# -----------------------------------------------------------------------------
+# 3. MANUAL PREDICT (RAW FEATURES)
+# -----------------------------------------------------------------------------
+@app.post("/predict/manual", response_model=ManualResponse)
+def predict_manual(features: ManualFeatures):
+    if model is None: raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    try:
+        # Convert Pydantic to DataFrame
+        data = features.dict()
+        df = pd.DataFrame([data])
+        
+        # Ensure column order
+        X = df[REQUIRED_FEATURES].values.astype(np.float32)
+        X = np.nan_to_num(X, nan=0.0)
+        
+        # Predict
+        dmatrix = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
+        raw_pred = float(model.predict(dmatrix)[0])
+        
+        # Physics Floor
+        min_aqi = calculate_physics_min_aqi(features.pm2_5, features.pm10)
+        final_aqi = max(raw_pred, min_aqi)
+        
+        cat = aqi_category(final_aqi)
+        
+        return {
+            "aqi": round(final_aqi, 1),
+            "category": cat["cat"],
+            "emoji": cat["emoji"],
+            "color": cat["color"],
+            "physics_floor_applied": final_aqi > raw_pred
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
