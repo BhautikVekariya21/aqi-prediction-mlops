@@ -1,6 +1,6 @@
 """
-AQI Prediction API - Ultra Lite (Robust + Production Ready)
-Version: 1.9.0
+AQI Prediction API - Ultra Lite (Robust + 15s Timeout)
+Version: 2.0.0
 """
 
 import os
@@ -31,10 +31,11 @@ gc.collect()
 # =============================================================================
 
 MODEL_DIR = Path(".") 
-API_VERSION = "1.9.0"
+API_VERSION = "2.0.0"
 
-# Strict timeout: If weather API takes >3s, drop the request
-EXTERNAL_API_TIMEOUT = 3.0 
+# INCREASED TIMEOUT: Gives external API 15 seconds to respond before giving up.
+# This fixes the "Request Timed Out" error for slow connections.
+EXTERNAL_API_TIMEOUT = 15.0 
 
 REQUIRED_FEATURES = [
     'wind_gusts_10m', 'week_of_year', 'state_encoded', 'pm2_5', 'sulphur_dioxide',
@@ -46,25 +47,26 @@ REQUIRED_FEATURES = [
     'dew_point_2m', 'cloud_cover_mid', 'wind_direction_10m'
 ]
 
-print("🚀 Starting AQI Prediction API (Robust Mode)...")
+print("🚀 Starting AQI Prediction API (Robust 2.0)...")
 
 # =============================================================================
-# GLOBAL SESSION (Thread-Safe & Retries)
+# GLOBAL SESSION (Thread-Safe & Aggressive Retries)
 # =============================================================================
 session = requests.Session()
 
-# Retry logic: If connection fails, try 1 more time, then give up
+# Retry logic: Retries 3 times with exponential backoff (0.5s, 1s, 2s)
+# This handles temporary glitches in the Open-Meteo API.
 retry_strategy = requests.adapters.Retry(
-    total=1,
-    backoff_factor=0.2,
+    total=3,
+    backoff_factor=0.5,
     status_forcelist=[429, 500, 502, 503, 504],
 )
 adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry_strategy)
 session.mount('https://', adapter)
 
-# Define Headers to prevent Rate Limiting (Identify as a valid app)
+# Valid User-Agent to prevent 403 Forbidden errors
 HEADERS = {
-    "User-Agent": "AQI-Prediction-App/1.0 (bhautik.vekariya@example.com)"
+    "User-Agent": "AQI-Prediction-App/2.0 (contact: developer@example.com)"
 }
 
 # =============================================================================
@@ -181,7 +183,7 @@ def fetch_data(lat: float, lon: float, days: int):
         aq_params["hourly"] = ["pm2_5", "pm10", "carbon_monoxide", "nitrogen_dioxide",
                                "sulphur_dioxide", "ozone", "dust", "aerosol_optical_depth"]
 
-        # Uses Global Session + Headers + Strict Timeout
+        # Uses Global Session + Headers + Strict 15s Timeout
         weather = session.get("https://api.open-meteo.com/v1/forecast", params=w_params, headers=HEADERS, timeout=EXTERNAL_API_TIMEOUT).json()
         air_quality = session.get("https://air-quality-api.open-meteo.com/v1/air-quality", params=aq_params, headers=HEADERS, timeout=EXTERNAL_API_TIMEOUT).json()
         
@@ -318,7 +320,7 @@ def predict_city_aqi(city: str, days: int = 2):
     df = prepare_features(weather, air_quality, city)
     if df is None or len(df) == 0: raise HTTPException(status_code=500, detail="Data processing failed")
 
-    # Winter Calibration (Same logic as before)
+    # Winter Calibration
     current_month = df['month'].iloc[0]
     is_winter = current_month in [10, 11, 12, 1, 2]
     CITY_TIERS = {"Delhi": 1.5, "Gurugram": 1.5, "Noida": 1.5, "Ghaziabad": 1.5, "Lucknow": 1.4, "Patna": 1.4, "Kanpur": 1.4, "Ahmedabad": 1.3, "Chandigarh": 1.3, "Jaipur": 1.3, "Kolkata": 1.2}
