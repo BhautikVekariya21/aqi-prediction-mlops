@@ -9,13 +9,12 @@ on:
 
 env:
   PYTHON_VERSION: "3.10"
-  # Replace 'bhautikvekariya21' with your HF username and 'aqi-prediction-mlops' with your Space name
   HF_USERNAME: "bhautikvekariya21"
   HF_SPACE_NAME: "aqi-prediction-mlops"
 
 jobs:
   # ---------------------------------------------------------------------------
-  # JOB 1: VERIFY FILES (CI)
+  # JOB 1: VERIFY FILES
   # ---------------------------------------------------------------------------
   verify-deployment:
     name: Verify Files
@@ -23,83 +22,47 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
-        with:
-          lfs: true # Important for large model files
+        uses: actions/checkout@v4
 
       - name: Check essential files
         run: |
           echo "✓ Checking deployment files..."
-
-          # Check Dockerfile (Required for Hugging Face)
-          if [ -f "Dockerfile" ]; then
-            echo "✓ Dockerfile found"
-          else
-            echo "✗ Dockerfile missing"
-            exit 1
-          fi
-
-          # Check requirements.txt
-          if [ -f "requirements.txt" ]; then
-            echo "✓ requirements.txt found"
-          else
-            echo "✗ requirements.txt missing"
-            exit 1
-          fi
-
-          # Check main API file (app.py)
-          if [ -f "app.py" ]; then
-            echo "✓ app.py found"
-          else
-            echo "✗ app.py missing"
-            exit 1
-          fi
-
-      - name: Check model files
-        run: |
-          echo "✓ Checking model files..."
-
-          # Check for model in root (where your code expects it now)
-          if [ -f "model.json.gz" ]; then
-             echo "✓ model.json.gz found in root"
-          elif [ -f "models/optimized/model.json.gz" ]; then
-             echo "✓ model.json.gz found in models/optimized/"
-          else
-             echo "✗ No model file found!"
-             exit 1
-          fi
+          if [ ! -f "Dockerfile" ]; then echo "✗ Dockerfile missing"; exit 1; fi
+          if [ ! -f "requirements.txt" ]; then echo "✗ requirements.txt missing"; exit 1; fi
+          if [ ! -f "app.py" ]; then echo "✗ app.py missing"; exit 1; fi
+          echo "✓ All essential files present"
 
   # ---------------------------------------------------------------------------
-  # JOB 2: DEPLOY TO HUGGING FACE (CD)
+  # JOB 2: DEPLOY TO HUGGING FACE (Using Python CLI)
   # ---------------------------------------------------------------------------
   deploy-to-hf:
     name: Deploy to Hugging Face
     needs: verify-deployment
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' # Only deploy on push to main
+    if: github.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           lfs: true
 
-      - name: Push to Hugging Face Hub
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Hugging Face Hub
+        run: pip install huggingface_hub
+
+      - name: Upload to Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          echo "🚀 Pushing to Hugging Face Space..."
+          echo "🚀 Uploading files to Hugging Face..."
 
-          # 1. Install git-lfs
-          git lfs install
-
-          # 2. Add Hugging Face remote
-          # Using the token directly in the URL for authentication
-          git remote add space https://$HF_USERNAME:$HF_TOKEN@huggingface.co/spaces/$HF_USERNAME/$HF_SPACE_NAME
-
-          # 3. Force push main branch to the Space
-          # We use --force to overwrite the Space with exactly what is in GitHub
-          git push --force space main
+          # This command uploads the current folder (.) to the root of the Space (.)
+          # It automatically handles large files like model.json.gz without errors.
+          huggingface-cli upload $HF_USERNAME/$HF_SPACE_NAME . . --repo-type space --token $HF_TOKEN
 
           echo "✅ Deployed successfully!"
