@@ -1,12 +1,9 @@
-# Production API dependencies
-numpy==1.24.3
-pandas==2.0.3
-xgboost==1.7.6
-joblib==1.3.2
+# Minimal production dependencies
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-pydantic==2.5.0
+xgboost==1.7.6
+numpy==1.24.3
+pandas==2.0.3
 requests==2.31.0
-python-dotenv==1.0.0
-PyYAML==6.0.1
-pyarrow==14.0.1
+pydantic==2.5.0
+python-multipart==0.0.6
