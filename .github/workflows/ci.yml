@@ -13,31 +13,8 @@ env:
   HF_SPACE_NAME: "aqi-prediction-mlops"
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # JOB 1: VERIFY FILES
-  # ---------------------------------------------------------------------------
-  verify-deployment:
-    name: Verify Files
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Check essential files
-        run: |
-          echo "✓ Checking deployment files..."
-          if [ ! -f "Dockerfile" ]; then echo "✗ Dockerfile missing"; exit 1; fi
-          if [ ! -f "requirements.txt" ]; then echo "✗ requirements.txt missing"; exit 1; fi
-          if [ ! -f "app.py" ]; then echo "✗ app.py missing"; exit 1; fi
-          echo "✓ All essential files present"
-
-  # ---------------------------------------------------------------------------
-  # JOB 2: DEPLOY TO HUGGING FACE (Using Python CLI)
-  # ---------------------------------------------------------------------------
   deploy-to-hf:
     name: Deploy to Hugging Face
-    needs: verify-deployment
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
 
@@ -52,17 +29,34 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Hugging Face Hub
+      - name: Install dependencies
         run: pip install huggingface_hub
 
-      - name: Upload to Space
+      - name: Prepare Files (Move Model to Root)
+        run: |
+          # 1. Check if model exists in the subfolder and move it to root
+          # This aligns your GitHub structure with what your app.py expects
+          if [ -f "models/optimized/model.json.gz" ]; then
+            echo "📦 Moving model from subfolder to root..."
+            mv models/optimized/model.json.gz .
+          fi
+
+          # 2. Verify model is in root now
+          if [ -f "model.json.gz" ]; then
+            echo "✅ Model found in root directory"
+          else
+            echo "❌ Model missing! Deployment will fail."
+            ls -R
+            exit 1
+          fi
+
+      - name: Upload to Hugging Face
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          echo "🚀 Uploading files to Hugging Face..."
+          echo "🚀 Uploading files to Hugging Face Space..."
 
-          # This command uploads the current folder (.) to the root of the Space (.)
-          # It automatically handles large files like model.json.gz without errors.
-          huggingface-cli upload $HF_USERNAME/$HF_SPACE_NAME . . --repo-type space --token $HF_TOKEN
+          # This python command handles large files correctly
+          huggingface-cli upload $HF_USERNAME/$HF_SPACE_NAME . . --repo-type space --token $HF_TOKEN --exclude ".git/*" ".github/*"
 
           echo "✅ Deployed successfully!"
