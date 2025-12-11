@@ -11,8 +11,13 @@ env:
   PYTHON_VERSION: "3.10"
   HF_USERNAME: "bhautikvekariya21"
   HF_SPACE_NAME: "aqi-prediction-mlops"
+  # New Env Var for Docker
+  DOCKER_IMAGE_NAME: "bhautikvekariya21/aqi-prediction-api"
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # JOB 1: DEPLOY TO HUGGING FACE (Your Existing Workflow)
+  # ---------------------------------------------------------------------------
   deploy-to-hf:
     name: Deploy to Hugging Face
     runs-on: ubuntu-latest
@@ -54,8 +59,6 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           echo "🚀 Uploading files via Python API..."
-
-          # Using Python directly avoids all CLI/PATH issues
           python -c "
           from huggingface_hub import HfApi
           import os
@@ -76,3 +79,54 @@ jobs:
           )
           print('✅ Upload complete!')
           "
+
+  # ---------------------------------------------------------------------------
+  # JOB 2: DEPLOY TO DOCKER HUB (New Added Job)
+  # ---------------------------------------------------------------------------
+  deploy-to-docker:
+    name: Push to Docker Hub
+    runs-on: ubuntu-latest
+    # Run this only on pushes to main (same as HF)
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      # We must repeat the file preparation because this job runs on a fresh machine
+      - name: Prepare Files (Move Model to Root)
+        run: |
+          if [ -f "models/optimized/model.json.gz" ]; then
+            echo "📦 Moving model from subfolder to root..."
+            mv models/optimized/model.json.gz .
+          fi
+          
+          if [ ! -f "model.json.gz" ]; then
+            echo "❌ CRITICAL: model.json.gz not found in root!"
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          # Tags: 'latest' AND the specific commit SHA
+          tags: |
+            ${{ env.DOCKER_IMAGE_NAME }}:latest
+            ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+          # Caching to speed up future builds
+          cache-from: type=registry,ref=${{ env.DOCKER_IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.DOCKER_IMAGE_NAME }}:buildcache,mode=max
