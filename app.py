@@ -1,6 +1,6 @@
 """
-AQI Prediction API - Ultra Lite (Robust + 15s Timeout)
-Version: 2.0.0
+AQI Prediction API - Ultra Lite (OpenWeatherMap Calibrated)
+Version: 3.2.0
 """
 
 import os
@@ -14,7 +14,6 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict
 
-# Heavy imports - Loaded cautiously
 import numpy as np
 import pandas as pd
 import xgboost as xgb
@@ -23,7 +22,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# Force garbage collection immediately
 gc.collect()
 
 # =============================================================================
@@ -31,11 +29,11 @@ gc.collect()
 # =============================================================================
 
 MODEL_DIR = Path(".") 
-API_VERSION = "2.0.0"
-
-# INCREASED TIMEOUT: Gives external API 15 seconds to respond before giving up.
-# This fixes the "Request Timed Out" error for slow connections.
+API_VERSION = "3.2.0 (OWM Calibration)"
 EXTERNAL_API_TIMEOUT = 15.0 
+
+# SECURE: Read OWM Token from Environment
+OWM_TOKEN = os.getenv("OWM_TOKEN") 
 
 REQUIRED_FEATURES = [
     'wind_gusts_10m', 'week_of_year', 'state_encoded', 'pm2_5', 'sulphur_dioxide',
@@ -47,71 +45,34 @@ REQUIRED_FEATURES = [
     'dew_point_2m', 'cloud_cover_mid', 'wind_direction_10m'
 ]
 
-print("🚀 Starting AQI Prediction API (Robust 2.0)...")
+print("🚀 Starting AQI Prediction API (OpenWeatherMap Mode)...")
 
 # =============================================================================
-# GLOBAL SESSION (Thread-Safe & Aggressive Retries)
+# GLOBAL SESSION
 # =============================================================================
 session = requests.Session()
-
-# Retry logic: Retries 3 times with exponential backoff (0.5s, 1s, 2s)
-# This handles temporary glitches in the Open-Meteo API.
-retry_strategy = requests.adapters.Retry(
-    total=3,
-    backoff_factor=0.5,
-    status_forcelist=[429, 500, 502, 503, 504],
-)
-adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry_strategy)
+retry = requests.adapters.Retry(total=2, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
+adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry)
 session.mount('https://', adapter)
+session.mount('http://', adapter)
 
-# Valid User-Agent to prevent 403 Forbidden errors
-HEADERS = {
-    "User-Agent": "AQI-Prediction-App/2.0 (contact: developer@example.com)"
-}
+HEADERS = {"User-Agent": "AQI-App/3.2"}
 
 # =============================================================================
-# LOAD MODEL (JSON/GZIP ONLY)
+# LOAD MODEL & CITIES
 # =============================================================================
-
 print("📦 Loading model...")
 model = None
-
 try:
-    gzip_path = MODEL_DIR / "model.json.gz"
-    json_path = MODEL_DIR / "model.json"
-
-    if gzip_path.exists():
-        print(f"✓ Found GZIP model at {gzip_path}...")
-        with gzip.open(gzip_path, 'rb') as f:
-            model_bytes = f.read()
-        
-        with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as tmp:
-            tmp.write(model_bytes)
-            tmp_path = tmp.name
-        
-        model = xgb.Booster()
-        model.load_model(tmp_path)
-        os.unlink(tmp_path)
-        del model_bytes
-        print("✓ Model loaded successfully")
-        
-    elif json_path.exists():
-        print(f"✓ Found JSON model at {json_path}...")
-        model = xgb.Booster()
-        model.load_model(str(json_path))
-        print("✓ Model loaded successfully")
-        
-    else:
-        print(f"❌ CRITICAL: No model file found in {MODEL_DIR.absolute()}")
-
-except Exception as e:
-    print(f"❌ Error loading model: {e}")
-
-gc.collect()
-
-# =============================================================================
-# DATA & HELPERS
-# =============================================================================
+    if (MODEL_DIR / "model.json.gz").exists():
+        with gzip.open(MODEL_DIR / "model.json.gz", 'rb') as f:
+            model = xgb.Booster()
+            with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as tmp:
+                tmp.write(f.read()); tmp_path = tmp.name
+            model.load_model(tmp_path); os.unlink(tmp_path)
+    elif (MODEL_DIR / "model.json").exists():
+        model = xgb.Booster(); model.load_model(str(MODEL_DIR / "model.json"))
+except Exception as e: print(f"❌ Error: {e}")
 
 CITIES = {
     "Agartala": {"lat": 23.8315, "lon": 91.2868, "state": "Tripura"},
@@ -145,53 +106,101 @@ CITIES = {
     "Visakhapatnam": {"lat": 17.6868, "lon": 83.2185, "state": "Andhra Pradesh"},
     "Noida": {"lat": 28.5355, "lon": 77.3910, "state": "Uttar Pradesh"},
 }
-
 CITY_ENC = {c: i for i, c in enumerate(sorted(CITIES.keys()))}
 STATES = sorted(set(v['state'] for v in CITIES.values()))
 STATE_ENC = {s: i for i, s in enumerate(STATES)}
 
+# =============================================================================
+# INDIAN AQI LOGIC (CPCB Standard)
+# =============================================================================
+
+def get_sub_index(conc, breakpoints):
+    for (low_c, high_c, low_i, high_i) in breakpoints:
+        if low_c <= conc <= high_c:
+            return low_i + (high_i - low_i) * (conc - low_c) / (high_c - low_c)
+    return 500 if conc > breakpoints[-1][1] else 0
+
+def calculate_indian_aqi_floor(pm25: float, pm10: float) -> float:
+    pm25_breakpoints = [(0,30,0,50), (30,60,51,100), (60,90,101,200), (90,120,201,300), (120,250,301,400), (250,5000,401,500)]
+    pm10_breakpoints = [(0,50,0,50), (50,100,51,100), (100,250,101,200), (250,350,201,300), (350,430,301,400), (430,5000,401,500)]
+    return max(get_sub_index(pm25, pm25_breakpoints), get_sub_index(pm10, pm10_breakpoints))
+
 def aqi_category(aqi: float) -> Dict:
     if aqi <= 50: return {"cat": "Good", "emoji": "🟢", "color": "#00e400"}
-    elif aqi <= 100: return {"cat": "Moderate", "emoji": "🟡", "color": "#ffff00"}
-    elif aqi <= 150: return {"cat": "Unhealthy for Sensitive", "emoji": "🟠", "color": "#ff7e00"}
-    elif aqi <= 200: return {"cat": "Unhealthy", "emoji": "🔴", "color": "#ff0000"}
-    elif aqi <= 300: return {"cat": "Very Unhealthy", "emoji": "🟣", "color": "#8f3f97"}
-    else: return {"cat": "Hazardous", "emoji": "🟤", "color": "#7e0023"}
+    elif aqi <= 100: return {"cat": "Satisfactory", "emoji": "🟡", "color": "#ffff00"}
+    elif aqi <= 200: return {"cat": "Moderate", "emoji": "🟠", "color": "#ff7e00"}
+    elif aqi <= 300: return {"cat": "Poor", "emoji": "🔴", "color": "#ff0000"}
+    elif aqi <= 400: return {"cat": "Very Poor", "emoji": "🟣", "color": "#8f3f97"}
+    else: return {"cat": "Severe", "emoji": "🟤", "color": "#7e0023"}
 
-def calculate_physics_min_aqi(pm2_5: float, pm10: float) -> float:
-    if pm2_5 > 500: return 500 + (pm2_5 - 500) * 0.8
-    elif pm2_5 > 350: return 400 + (pm2_5 - 350) * 0.8
-    elif pm2_5 > 250: return 300 + (pm2_5 - 250) * 0.9
-    elif pm2_5 > 150: return 200 + (pm2_5 - 150) * 1.0
-    elif pm2_5 > 55:  return 150 + (pm2_5 - 55) * 1.0
-    if pm10 > 430: return 400
-    if pm10 > 350: return 300
-    return 0.0
+# =============================================================================
+# CALIBRATION LOGIC (OpenWeatherMap Only)
+# =============================================================================
 
-def fetch_data(lat: float, lon: float, days: int):
-    try:
-        # Reduced timeout and specific params
-        params = {"latitude": lat, "longitude": lon, "timezone": "Asia/Kolkata", "forecast_days": days}
+def get_owm_calibration_factor(lat: float, lon: float, model_pm25: float) -> float:
+    """
+    Fetches real-time PM2.5 from OpenWeatherMap to correct forecast bias.
+    """
+    if not OWM_TOKEN: 
+        return 1.0
         
+    try:
+        url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={OWM_TOKEN}"
+        resp = session.get(url, timeout=3.0).json()
+        
+        # OWM returns components in μg/m3
+        if 'list' in resp and len(resp['list']) > 0:
+            real_pm25 = float(resp['list'][0]['components']['pm2_5'])
+            
+            # Calculate Ratio
+            model_val = max(model_pm25, 5.0) # Prevent zero division
+            ratio = real_pm25 / model_val
+            
+            # Safety Caps: Min 0.5x, Max 6.0x (to catch extreme Delhi events)
+            return max(0.5, min(ratio, 6.0))
+            
+    except Exception:
+        pass # Fail silently to raw model if OWM fails
+        
+    return 1.0
+
+# =============================================================================
+# DATA PIPELINE
+# =============================================================================
+
+def fetch_data(lat: float, lon: float, days: int, city_name: str = None):
+    try:
+        # 1. Fetch Forecast (Open-Meteo)
+        params = {"latitude": lat, "longitude": lon, "timezone": "Asia/Kolkata", "forecast_days": days}
         w_params = params.copy()
         w_params["hourly"] = ["relative_humidity_2m", "dew_point_2m", "wind_speed_10m",
                               "wind_gusts_10m", "wind_direction_10m", "pressure_msl",
                               "surface_pressure", "cloud_cover", "cloud_cover_low",
                               "cloud_cover_mid", "cloud_cover_high", "is_day"]
-        
         aq_params = params.copy()
         aq_params["hourly"] = ["pm2_5", "pm10", "carbon_monoxide", "nitrogen_dioxide",
                                "sulphur_dioxide", "ozone", "dust", "aerosol_optical_depth"]
 
-        # Uses Global Session + Headers + Strict 15s Timeout
         weather = session.get("https://api.open-meteo.com/v1/forecast", params=w_params, headers=HEADERS, timeout=EXTERNAL_API_TIMEOUT).json()
         air_quality = session.get("https://air-quality-api.open-meteo.com/v1/air-quality", params=aq_params, headers=HEADERS, timeout=EXTERNAL_API_TIMEOUT).json()
-        
+
+        # 2. Apply Calibration (OWM Ground Truth)
+        if air_quality:
+            try:
+                forecast_pm25 = air_quality['hourly']['pm2_5'][0]
+                
+                # Get factor from OpenWeatherMap
+                factor = get_owm_calibration_factor(lat, lon, forecast_pm25)
+                
+                if factor != 1.0:
+                    air_quality['hourly']['pm2_5'] = [x * factor for x in air_quality['hourly']['pm2_5']]
+                    air_quality['hourly']['pm10'] = [x * (factor * 0.95) for x in air_quality['hourly']['pm10']]
+                    if factor > 2.0:
+                        air_quality['hourly']['nitrogen_dioxide'] = [x * 1.15 for x in air_quality['hourly']['nitrogen_dioxide']]
+            except Exception: pass
+
         return weather, air_quality
-    except Exception as e:
-        # Fail silently for bulk requests, log only
-        # print(f"Error fetching data: {e}") 
-        return None, None
+    except Exception: return None, None
 
 def safe_get(data_dict, key, index, default, total_length):
     try:
@@ -204,13 +213,10 @@ def prepare_features(weather: Dict, air_quality: Dict, city: str) -> Optional[pd
     weather_hourly = weather.get('hourly', {})
     air_hourly = air_quality.get('hourly', {})
     n_hours = len(weather_hourly.get('time', []))
-    
     if n_hours == 0: return None
     
     rows = []
-    # Only process first 24 hours to save RAM/Time if doing bulk
     limit = n_hours if n_hours < 48 else 48 
-    
     for i in range(limit):
         try:
             dt = pd.to_datetime(weather_hourly['time'][i])
@@ -244,11 +250,10 @@ def prepare_features(weather: Dict, air_quality: Dict, city: str) -> Optional[pd
             }
             rows.append(row)
         except Exception: continue
-    
     return pd.DataFrame(rows) if rows else None
 
 # =============================================================================
-# API MODELS
+# API MODELS & ENDPOINTS
 # =============================================================================
 
 class HourlyForecast(BaseModel):
@@ -280,19 +285,8 @@ class ManualResponse(BaseModel):
 class CitySummary(BaseModel):
     city: str; state: str; current_aqi: float; category: str; emoji: str
 
-# =============================================================================
-# API ENDPOINTS
-# =============================================================================
-
 app = FastAPI(title="AQI Prediction API", version=API_VERSION)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/")
 def root(): return {"status": "ok", "api": "AQI Prediction API", "version": API_VERSION}
@@ -304,56 +298,29 @@ def get_cities():
 @app.get("/health")
 def health_check():
     if model is None: raise HTTPException(status_code=503, detail="Model not loaded")
-    return {"status": "healthy", "mode": "ultra_lite"}
+    return {"status": "healthy", "mode": "owm_calibrated"}
 
 @app.get("/predict/{city}", response_model=PredictionResponse)
 def predict_city_aqi(city: str, days: int = 2):
     if city not in CITIES: raise HTTPException(status_code=400, detail="City not found")
     if model is None: raise HTTPException(status_code=503, detail="Model not loaded")
+    days = max(1, min(5, days)); city_info = CITIES[city]
     
-    days = max(1, min(5, days))
-    city_info = CITIES[city]
-    
-    weather, air_quality = fetch_data(city_info['lat'], city_info['lon'], days)
+    weather, air_quality = fetch_data(city_info['lat'], city_info['lon'], days, city_name=city)
     if not weather or not air_quality: raise HTTPException(status_code=503, detail="Open-Meteo API failed/timeout")
     
     df = prepare_features(weather, air_quality, city)
     if df is None or len(df) == 0: raise HTTPException(status_code=500, detail="Data processing failed")
 
-    # Winter Calibration
-    current_month = df['month'].iloc[0]
-    is_winter = current_month in [10, 11, 12, 1, 2]
-    CITY_TIERS = {"Delhi": 1.5, "Gurugram": 1.5, "Noida": 1.5, "Ghaziabad": 1.5, "Lucknow": 1.4, "Patna": 1.4, "Kanpur": 1.4, "Ahmedabad": 1.3, "Chandigarh": 1.3, "Jaipur": 1.3, "Kolkata": 1.2}
-
-    if is_winter:
-        base_factor = CITY_TIERS.get(city, 1.0)
-        if base_factor > 1.0:
-            for idx in df.index:
-                raw_pm25 = df.at[idx, 'pm2_5']; raw_wind = df.at[idx, 'wind_speed_10m']
-                if raw_wind > 12.0: active_factor = 1.2; wind_correction = 1.0
-                else:
-                    if raw_pm25 < 80.0: active_factor = base_factor
-                    elif raw_pm25 < 150.0: active_factor = base_factor * 1.5
-                    else: active_factor = base_factor * 2.2
-                    wind_correction = 0.6
-                df.at[idx, 'pm2_5'] = raw_pm25 * active_factor
-                df.at[idx, 'pm10'] = df.at[idx, 'pm10'] * (active_factor * 0.9)
-                df.at[idx, 'wind_speed_10m'] = raw_wind * wind_correction
-                if active_factor > 1.5: df.at[idx, 'nitrogen_dioxide'] = df.at[idx, 'nitrogen_dioxide'] * 1.3
-
-    # Prediction
-    X = df[REQUIRED_FEATURES].values.astype(np.float32)
-    X = np.nan_to_num(X, nan=0.0)
+    X = df[REQUIRED_FEATURES].values.astype(np.float32); X = np.nan_to_num(X, nan=0.0)
     dmatrix = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
     raw_predictions = model.predict(dmatrix)
-    
     final_aqi = []
     for i, pred in enumerate(raw_predictions):
-        min_aqi = calculate_physics_min_aqi(df.iloc[i]['pm2_5'], df.iloc[i]['pm10'])
+        min_aqi = calculate_indian_aqi_floor(df.iloc[i]['pm2_5'], df.iloc[i]['pm10'])
         final_aqi.append(max(float(pred), min_aqi))
     df['aqi'] = final_aqi
     
-    # Response
     hourly_forecast = []
     for _, row in df.iterrows():
         cat = aqi_category(row['aqi'])
@@ -365,7 +332,6 @@ def predict_city_aqi(city: str, days: int = 2):
             "sulphur_dioxide": round(row['sulphur_dioxide'], 1), "carbon_monoxide": round(row['carbon_monoxide'], 1),
             "relative_humidity_2m": round(row['relative_humidity_2m'], 1), "wind_speed_10m": round(row['wind_speed_10m'], 1)
         })
-    
     df['date'] = df['datetime'].dt.date
     daily_summary = []
     for date, group in df.groupby('date'):
@@ -375,11 +341,7 @@ def predict_city_aqi(city: str, days: int = 2):
             "max_aqi": round(float(group['aqi'].max()), 1), "min_aqi": round(float(group['aqi'].min()), 1),
             "category": d_cat["cat"], "emoji": d_cat["emoji"], "color": d_cat["color"]
         })
-    
-    avg_aqi = float(np.mean(final_aqi))
-    o_cat = aqi_category(avg_aqi)
-    del df, X, dmatrix, raw_predictions, final_aqi; gc.collect()
-
+    avg_aqi = float(np.mean(final_aqi)); o_cat = aqi_category(avg_aqi); del df, X, dmatrix, raw_predictions, final_aqi; gc.collect()
     return {
         "success": True, "city": city, "state": city_info['state'],
         "coordinates": {"lat": city_info['lat'], "lon": city_info['lon']},
@@ -392,87 +354,57 @@ def predict_city_aqi(city: str, days: int = 2):
         }
     }
 
-# =============================================================================
-# BULK PREDICT (THREADED PARALLEL PROCESSING + ROBUSTNESS)
-# =============================================================================
 def process_single_city(city_name: str) -> Optional[Dict]:
-    """Helper function to be run in parallel for each city"""
     try:
         city_info = CITIES[city_name]
-        # Fetch minimal data (1 day) - timeout is handled inside fetch_data
-        weather, air_quality = fetch_data(city_info['lat'], city_info['lon'], 1)
-        
+        weather, air_quality = fetch_data(city_info['lat'], city_info['lon'], 1, city_name=city_name)
         if weather and air_quality:
             df = prepare_features(weather, air_quality, city_name)
             if df is not None and len(df) > 0:
                 current_row = df.iloc[[0]].copy() 
-                min_aqi = calculate_physics_min_aqi(current_row['pm2_5'].values[0], current_row['pm10'].values[0])
-                X = current_row[REQUIRED_FEATURES].values.astype(np.float32)
-                X = np.nan_to_num(X, nan=0.0)
+                min_aqi = calculate_indian_aqi_floor(current_row['pm2_5'].values[0], current_row['pm10'].values[0])
+                X = current_row[REQUIRED_FEATURES].values.astype(np.float32); X = np.nan_to_num(X, nan=0.0)
                 dmatrix = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
                 pred = float(model.predict(dmatrix)[0])
                 final_aqi = max(pred, min_aqi)
                 cat = aqi_category(final_aqi)
-                
                 return {
-                    "city": city_name,
-                    "state": city_info['state'],
-                    "current_aqi": round(final_aqi, 1),
-                    "category": cat['cat'],
-                    "emoji": cat['emoji']
+                    "city": city_name, "state": city_info['state'],
+                    "current_aqi": round(final_aqi, 1), "category": cat['cat'], "emoji": cat['emoji']
                 }
-    except Exception:
-        # If one city fails, return None so the rest still work
-        return None
+    except Exception: return None
     return None
 
 @app.get("/predict/all/cities", response_model=List[CitySummary])
 def predict_all_cities():
-    """Fetches AQI for ALL supported cities concurrently."""
     if model is None: raise HTTPException(status_code=503, detail="Model not loaded")
-    
     results = []
-    
-    # 10 Workers is the sweet spot for Free Tier
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         future_to_city = {executor.submit(process_single_city, city): city for city in CITIES}
-        
         for future in concurrent.futures.as_completed(future_to_city):
             try:
                 data = future.result()
-                if data:
-                    results.append(data)
-            except Exception:
-                continue # Skip failures gracefully
-
-    # Memory cleanup after heavy operation
+                if data: results.append(data)
+            except Exception: continue
     gc.collect()
-    
     return sorted(results, key=lambda x: x['current_aqi'], reverse=True)
 
 @app.post("/predict/manual", response_model=ManualResponse)
 def predict_manual(features: ManualFeatures):
     if model is None: raise HTTPException(status_code=503, detail="Model not loaded")
     try:
-        data = features.dict()
-        df = pd.DataFrame([data])
-        X = df[REQUIRED_FEATURES].values.astype(np.float32)
-        X = np.nan_to_num(X, nan=0.0)
+        data = features.dict(); df = pd.DataFrame([data])
+        X = df[REQUIRED_FEATURES].values.astype(np.float32); X = np.nan_to_num(X, nan=0.0)
         dmatrix = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
         raw_pred = float(model.predict(dmatrix)[0])
-        min_aqi = calculate_physics_min_aqi(features.pm2_5, features.pm10)
+        min_aqi = calculate_indian_aqi_floor(features.pm2_5, features.pm10)
         final_aqi = max(raw_pred, min_aqi)
         cat = aqi_category(final_aqi)
-        
         return {
-            "aqi": round(final_aqi, 1),
-            "category": cat["cat"],
-            "emoji": cat["emoji"],
-            "color": cat["color"],
+            "aqi": round(final_aqi, 1), "category": cat["cat"], "emoji": cat["emoji"], "color": cat["color"],
             "physics_floor_applied": final_aqi > raw_pred
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+    except Exception as e: raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
