@@ -1,6 +1,6 @@
 """
-AQI Prediction API - Indian Standard Edition (Legacy Core)
-Version: 4.0.0
+AQI Prediction API - Year-Round Indian Standard
+Version: 5.0.0
 """
 
 import os
@@ -28,7 +28,7 @@ gc.collect()
 # =============================================================================
 
 MODEL_DIR = Path(".") 
-API_VERSION = "4.0.0 (Indian CPCB Standard)"
+API_VERSION = "5.0.0 (Year-Round Indian Logic)"
 EXTERNAL_API_TIMEOUT = 10.0 
 
 REQUIRED_FEATURES = [
@@ -41,7 +41,7 @@ REQUIRED_FEATURES = [
     'dew_point_2m', 'cloud_cover_mid', 'wind_direction_10m'
 ]
 
-print("🚀 Starting AQI Prediction API (Indian Standard Mode)...")
+print("🚀 Starting AQI Prediction API (Year-Round Mode)...")
 
 # =============================================================================
 # GLOBAL SESSION
@@ -51,7 +51,7 @@ retry = requests.adapters.Retry(total=2, backoff_factor=0.5, status_forcelist=[4
 adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry)
 session.mount('https://', adapter)
 
-HEADERS = {"User-Agent": "AQI-Indian-App/4.0"}
+HEADERS = {"User-Agent": "AQI-Indian-App/5.0"}
 
 # =============================================================================
 # LOAD MODEL & CITIES
@@ -114,44 +114,28 @@ def get_sub_index(conc, breakpoints):
     for (low_c, high_c, low_i, high_i) in breakpoints:
         if low_c <= conc <= high_c:
             return low_i + (high_i - low_i) * (conc - low_c) / (high_c - low_c)
-    # If off the charts, extrapolate linearly
     last = breakpoints[-1]
     if conc > last[1]:
-        return last[3] + (conc - last[1]) * 1.5  # Penalize extreme pollution
+        return last[3] + (conc - last[1]) * 1.5 
     return 0
 
 def calculate_indian_aqi(pm25: float, pm10: float) -> float:
     """
-    Converts raw PM2.5/PM10 (µg/m³) to Indian AQI.
-    Unlike US AQI, Indian AQI scales higher/faster for the same pollution.
+    Converts raw PM2.5/PM10 (µg/m³) to Indian AQI (CPCB Standard).
     """
-    # (Low Conc, High Conc, Low Index, High Index)
     pm25_breakpoints = [
-        (0, 30, 0, 50),        # Good
-        (30, 60, 51, 100),     # Satisfactory
-        (60, 90, 101, 200),    # Moderate
-        (90, 120, 201, 300),   # Poor
-        (120, 250, 301, 400),  # Very Poor
-        (250, 5000, 401, 5000) # Severe (Extended cap)
+        (0, 30, 0, 50), (30, 60, 51, 100), (60, 90, 101, 200),
+        (90, 120, 201, 300), (120, 250, 301, 400), (250, 5000, 401, 5000)
     ]
-    
     pm10_breakpoints = [
-        (0, 50, 0, 50),
-        (50, 100, 51, 100),
-        (100, 250, 101, 200),
-        (250, 350, 201, 300),
-        (350, 430, 301, 400),
-        (430, 5000, 401, 5000)
+        (0, 50, 0, 50), (50, 100, 51, 100), (100, 250, 101, 200),
+        (250, 350, 201, 300), (350, 430, 301, 400), (430, 5000, 401, 5000)
     ]
-    
     val_pm25 = get_sub_index(pm25, pm25_breakpoints)
     val_pm10 = get_sub_index(pm10, pm10_breakpoints)
-    
-    # In India, the AQI is the MAXIMUM of the sub-indices
     return max(val_pm25, val_pm10)
 
 def aqi_category(aqi: float) -> Dict:
-    """Official Indian AQI Categories"""
     if aqi <= 50: return {"cat": "Good", "emoji": "🟢", "color": "#00e400"}
     elif aqi <= 100: return {"cat": "Satisfactory", "emoji": "🟡", "color": "#ffff00"}
     elif aqi <= 200: return {"cat": "Moderate", "emoji": "🟠", "color": "#ff7e00"}
@@ -160,44 +144,64 @@ def aqi_category(aqi: float) -> Dict:
     else: return {"cat": "Severe", "emoji": "🟤", "color": "#7e0023"}
 
 # =============================================================================
-# 2. "CURRENT HAPPENING SITUATION" LOGIC (Winter/Regional Bias)
+# 2. YEAR-ROUND REGIONAL BIAS (The "Smart" Fix)
 # =============================================================================
 
+def get_seasonal_multiplier(month: int, region_type: str) -> float:
+    """
+    Determines multiplier based on Indian Seasons.
+    1. Nov-Jan: Peak Smog (High)
+    2. Feb-May: Dust/Heat (Medium-High)
+    3. Jun-Sep: Monsoon (Low/Normal)
+    4. Oct: Transition (High)
+    """
+    # PEAK WINTER (Smog)
+    if month in [11, 12, 1]:
+        return 1.8 if region_type == "North" else 1.3
+    
+    # SUMMER / DUST SEASON (Current Season: Feb-May)
+    # North India has high dust load, South has humidity
+    if month in [2, 3, 4, 5]:
+        return 1.4 if region_type == "North" else 1.2
+    
+    # MONSOON (Rain washes pollutants)
+    if month in [6, 7, 8, 9]:
+        return 1.0 # Trust the model (rain is hard to bias)
+
+    # POST-MONSOON / PRE-WINTER (Crop Burning starts)
+    if month in [10]:
+        return 1.6 if region_type == "North" else 1.2
+        
+    return 1.1
+
 def apply_indian_context_bias(df: pd.DataFrame, city: str):
-    """
-    Adjusts raw pollution data based on geography and season.
-    Open-Meteo underpredicts North India winters; this fixes it.
-    """
     if df.empty: return df
     
     current_month = df['month'].iloc[0]
-    # Winter Months in India: Oct, Nov, Dec, Jan, Feb
-    is_winter = current_month in [10, 11, 12, 1, 2]
     
-    # Region 1: The "Gas Chamber" Belt (North India)
-    # Stubble burning + Winter Inversion = Extreme PM2.5
-    NORTH_INDIA = ["Delhi", "Noida", "Gurugram", "Ghaziabad", "Lucknow", "Kanpur", "Patna", "Chandigarh", "Amritsar"]
+    # Region Definitions
+    NORTH_INDIA = ["Delhi", "Noida", "Gurugram", "Ghaziabad", "Lucknow", "Kanpur", "Patna", "Chandigarh", "Amritsar", "Dehradun", "Jaipur"]
+    METROS = ["Mumbai", "Kolkata", "Ahmedabad", "Hyderabad", "Bengaluru", "Chennai", "Pune"]
     
-    # Region 2: Heavy Metro Traffic (Dust + Vehicle)
-    METROS = ["Mumbai", "Kolkata", "Ahmedabad", "Jaipur", "Hyderabad", "Bengaluru"]
-
-    multiplier = 1.0
-    
+    # Determine Region Type
     if city in NORTH_INDIA:
-        # Huge boost in winter, slight boost otherwise
-        multiplier = 1.8 if is_winter else 1.2
+        region_type = "North"
     elif city in METROS:
-        # Standard urban bias
-        multiplier = 1.3 if is_winter else 1.15
+        region_type = "Metro"
+    else:
+        region_type = "Other"
+
+    # Get Dynamic Multiplier
+    multiplier = get_seasonal_multiplier(current_month, region_type)
     
-    # Apply multiplier to pollutants
+    # Apply multiplier
     if multiplier > 1.0:
         df['pm2_5'] = df['pm2_5'] * multiplier
-        df['pm10'] = df['pm10'] * (multiplier * 0.95) # PM10 scales slightly less
+        df['pm10'] = df['pm10'] * (multiplier * 0.95)
         
-        # Nitrogen Dioxide also traps in winter
-        if is_winter:
-            df['nitrogen_dioxide'] = df['nitrogen_dioxide'] * 1.2
+        # Nitrogen Dioxide bias for Metros (Traffic)
+        if region_type == "Metro" or region_type == "North":
+             df['nitrogen_dioxide'] = df['nitrogen_dioxide'] * 1.2
 
     return df
 
@@ -217,7 +221,6 @@ def fetch_data(lat: float, lon: float, days: int):
         aq_params["hourly"] = ["pm2_5", "pm10", "carbon_monoxide", "nitrogen_dioxide",
                                "sulphur_dioxide", "ozone", "dust", "aerosol_optical_depth"]
 
-        # Only calling Open-Meteo (Legacy Method)
         weather = session.get("https://api.open-meteo.com/v1/forecast", params=w_params, headers=HEADERS, timeout=EXTERNAL_API_TIMEOUT).json()
         air_quality = session.get("https://air-quality-api.open-meteo.com/v1/air-quality", params=aq_params, headers=HEADERS, timeout=EXTERNAL_API_TIMEOUT).json()
 
@@ -275,7 +278,7 @@ def prepare_features(weather: Dict, air_quality: Dict, city: str) -> Optional[pd
     
     df = pd.DataFrame(rows) if rows else None
     
-    # APPLY THE "CURRENT SITUATION" BIAS HERE
+    # APPLY BIAS (Now handles Year-Round logic, not just winter)
     if df is not None:
         df = apply_indian_context_bias(df, city)
         
@@ -347,8 +350,6 @@ def predict_city_aqi(city: str, days: int = 2):
     
     final_aqi = []
     for i, pred in enumerate(raw_predictions):
-        # HERE IS THE MAGIC: Use Indian CPCB logic + ML prediction
-        # We take the MAX of ML prediction and Physics-based CPCB calculation
         cpcb_val = calculate_indian_aqi(df.iloc[i]['pm2_5'], df.iloc[i]['pm10'])
         final_aqi.append(max(float(pred), cpcb_val))
     df['aqi'] = final_aqi
@@ -394,9 +395,7 @@ def process_single_city(city_name: str) -> Optional[Dict]:
             df = prepare_features(weather, air_quality, city_name)
             if df is not None and len(df) > 0:
                 current_row = df.iloc[[0]].copy() 
-                # Apply Indian CPCB calculation
                 cpcb_val = calculate_indian_aqi(current_row['pm2_5'].values[0], current_row['pm10'].values[0])
-                
                 X = current_row[REQUIRED_FEATURES].values.astype(np.float32); X = np.nan_to_num(X, nan=0.0)
                 dmatrix = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
                 pred = float(model.predict(dmatrix)[0])
@@ -431,7 +430,6 @@ def predict_manual(features: ManualFeatures):
         X = df[REQUIRED_FEATURES].values.astype(np.float32); X = np.nan_to_num(X, nan=0.0)
         dmatrix = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
         raw_pred = float(model.predict(dmatrix)[0])
-        # Force Indian Calculation
         min_aqi = calculate_indian_aqi(features.pm2_5, features.pm10)
         final_aqi = max(raw_pred, min_aqi)
         cat = aqi_category(final_aqi)
