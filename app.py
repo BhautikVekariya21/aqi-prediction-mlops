@@ -135,6 +135,15 @@ def calculate_indian_aqi(pm25: float, pm10: float) -> float:
     val_pm10 = get_sub_index(pm10, pm10_breakpoints)
     return max(val_pm25, val_pm10)
 
+
+def apply_physics_floor(predicted_aqi: float, pm25: float, pm10: float) -> float:
+    """Apply floor only for severe pollution episodes to avoid high bias."""
+    cpcb_val = calculate_indian_aqi(pm25, pm10)
+    severe_episode = (pm25 >= 250) or (pm10 >= 350)
+    if severe_episode:
+        return max(predicted_aqi, cpcb_val)
+    return predicted_aqi
+
 def aqi_category(aqi: float) -> Dict:
     if aqi <= 50: return {"cat": "Good", "emoji": "🟢", "color": "#00e400"}
     elif aqi <= 100: return {"cat": "Satisfactory", "emoji": "🟡", "color": "#ffff00"}
@@ -148,31 +157,23 @@ def aqi_category(aqi: float) -> Dict:
 # =============================================================================
 
 def get_seasonal_multiplier(month: int, region_type: str) -> float:
-    """
-    Determines multiplier based on Indian Seasons.
-    1. Nov-Jan: Peak Smog (High)
-    2. Feb-May: Dust/Heat (Medium-High)
-    3. Jun-Sep: Monsoon (Low/Normal)
-    4. Oct: Transition (High)
-    """
-    # PEAK WINTER (Smog)
+    """Conservative seasonal prior used as a soft adjustment."""
     if month in [11, 12, 1]:
-        return 1.8 if region_type == "North" else 1.3
-    
-    # SUMMER / DUST SEASON (Current Season: Feb-May)
-    # North India has high dust load, South has humidity
+        return 1.18 if region_type == "North" else 1.08
     if month in [2, 3, 4, 5]:
-        return 1.4 if region_type == "North" else 1.2
-    
-    # MONSOON (Rain washes pollutants)
+        return 1.10 if region_type == "North" else 1.05
     if month in [6, 7, 8, 9]:
-        return 1.0 # Trust the model (rain is hard to bias)
-
-    # POST-MONSOON / PRE-WINTER (Crop Burning starts)
+        return 0.96 if region_type == "North" else 0.94
     if month in [10]:
-        return 1.6 if region_type == "North" else 1.2
-        
-    return 1.1
+        return 1.14 if region_type == "North" else 1.05
+    return 1.0
+
+def _weather_damping_factor(df: pd.DataFrame) -> pd.Series:
+    """Row-wise damping so seasonal prior doesn't over-correct."""
+    rainfall = (df.get('cloud_cover', 0).fillna(0) / 100.0).clip(0.0, 1.0)
+    wind = (df.get('wind_speed_10m', 0).fillna(0) / 30.0).clip(0.0, 1.0)
+    # More wind/cloud usually disperses pollutants; shrink seasonal boost in such cases.
+    return (1.0 - 0.35 * rainfall - 0.25 * wind).clip(0.65, 1.0)
 
 def apply_indian_context_bias(df: pd.DataFrame, city: str):
     if df.empty: return df
@@ -194,14 +195,16 @@ def apply_indian_context_bias(df: pd.DataFrame, city: str):
     # Get Dynamic Multiplier
     multiplier = get_seasonal_multiplier(current_month, region_type)
     
-    # Apply multiplier
-    if multiplier > 1.0:
-        df['pm2_5'] = df['pm2_5'] * multiplier
-        df['pm10'] = df['pm10'] * (multiplier * 0.95)
-        
-        # Nitrogen Dioxide bias for Metros (Traffic)
-        if region_type == "Metro" or region_type == "North":
-             df['nitrogen_dioxide'] = df['nitrogen_dioxide'] * 1.2
+    # Apply conservative and weather-aware multiplier
+    weather_factor = _weather_damping_factor(df)
+    effective_multiplier = 1.0 + (multiplier - 1.0) * weather_factor
+
+    df['pm2_5'] = df['pm2_5'] * effective_multiplier
+    df['pm10'] = df['pm10'] * (effective_multiplier * 0.97)
+
+    if region_type in ["Metro", "North"]:
+        no2_multiplier = 1.0 + 0.08 * weather_factor
+        df['nitrogen_dioxide'] = df['nitrogen_dioxide'] * no2_multiplier
 
     return df
 
@@ -278,10 +281,12 @@ def prepare_features(weather: Dict, air_quality: Dict, city: str) -> Optional[pd
     
     df = pd.DataFrame(rows) if rows else None
     
-    # APPLY BIAS (Now handles Year-Round logic, not just winter)
+    # Keep raw pollutant values for calibration/output, then apply model-only contextual bias
     if df is not None:
+        for col in ['pm2_5', 'pm10', 'nitrogen_dioxide']:
+            df[f'raw_{col}'] = df[col]
         df = apply_indian_context_bias(df, city)
-        
+
     return df
 
 # =============================================================================
@@ -350,8 +355,9 @@ def predict_city_aqi(city: str, days: int = 2):
     
     final_aqi = []
     for i, pred in enumerate(raw_predictions):
-        cpcb_val = calculate_indian_aqi(df.iloc[i]['pm2_5'], df.iloc[i]['pm10'])
-        final_aqi.append(max(float(pred), cpcb_val))
+        pm25_raw = float(df.iloc[i].get('raw_pm2_5', df.iloc[i]['pm2_5']))
+        pm10_raw = float(df.iloc[i].get('raw_pm10', df.iloc[i]['pm10']))
+        final_aqi.append(apply_physics_floor(float(pred), pm25_raw, pm10_raw))
     df['aqi'] = final_aqi
     
     hourly_forecast = []
@@ -360,8 +366,8 @@ def predict_city_aqi(city: str, days: int = 2):
         hourly_forecast.append({
             "datetime": row['datetime'].isoformat(), "hour": int(row['hour']),
             "aqi": round(row['aqi'], 1), "category": cat["cat"], "emoji": cat["emoji"], "color": cat["color"],
-            "pm2_5": round(row['pm2_5'], 1), "pm10": round(row['pm10'], 1),
-            "ozone": round(row['ozone'], 1), "nitrogen_dioxide": round(row['nitrogen_dioxide'], 1),
+            "pm2_5": round(row.get('raw_pm2_5', row['pm2_5']), 1), "pm10": round(row.get('raw_pm10', row['pm10']), 1),
+            "ozone": round(row['ozone'], 1), "nitrogen_dioxide": round(row.get('raw_nitrogen_dioxide', row['nitrogen_dioxide']), 1),
             "sulphur_dioxide": round(row['sulphur_dioxide'], 1), "carbon_monoxide": round(row['carbon_monoxide'], 1),
             "relative_humidity_2m": round(row['relative_humidity_2m'], 1), "wind_speed_10m": round(row['wind_speed_10m'], 1)
         })
@@ -395,11 +401,12 @@ def process_single_city(city_name: str) -> Optional[Dict]:
             df = prepare_features(weather, air_quality, city_name)
             if df is not None and len(df) > 0:
                 current_row = df.iloc[[0]].copy() 
-                cpcb_val = calculate_indian_aqi(current_row['pm2_5'].values[0], current_row['pm10'].values[0])
+                pm25_raw = float(current_row.get('raw_pm2_5', current_row['pm2_5']).values[0])
+                pm10_raw = float(current_row.get('raw_pm10', current_row['pm10']).values[0])
                 X = current_row[REQUIRED_FEATURES].values.astype(np.float32); X = np.nan_to_num(X, nan=0.0)
                 dmatrix = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
                 pred = float(model.predict(dmatrix)[0])
-                final_aqi = max(pred, cpcb_val)
+                final_aqi = apply_physics_floor(pred, pm25_raw, pm10_raw)
                 cat = aqi_category(final_aqi)
                 return {
                     "city": city_name, "state": city_info['state'],

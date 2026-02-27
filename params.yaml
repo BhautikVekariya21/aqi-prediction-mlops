@@ -82,7 +82,7 @@ feature_engineering:
     - "state"
   encoding_method: "label"
   
-  create_cyclical_features: false
+  create_cyclical_features: true
   create_interaction_features: false
   create_lag_features: false
   create_rolling_features: false
@@ -128,7 +128,8 @@ data_splitting:
   output_dir: "data/splits"
   test_size: 0.15
   validation_size: 0.15
-  stratify: true
+  split_method: "time"
+  stratify: false
   stratify_bins: [0, 50, 100, 150, 200, 300, 500, 1000]
 
 # ----- Model Training Parameters -----
