@@ -148,31 +148,23 @@ def aqi_category(aqi: float) -> Dict:
 # =============================================================================
 
 def get_seasonal_multiplier(month: int, region_type: str) -> float:
-    """
-    Determines multiplier based on Indian Seasons.
-    1. Nov-Jan: Peak Smog (High)
-    2. Feb-May: Dust/Heat (Medium-High)
-    3. Jun-Sep: Monsoon (Low/Normal)
-    4. Oct: Transition (High)
-    """
-    # PEAK WINTER (Smog)
+    """Conservative seasonal prior used as a soft adjustment."""
     if month in [11, 12, 1]:
-        return 1.8 if region_type == "North" else 1.3
-    
-    # SUMMER / DUST SEASON (Current Season: Feb-May)
-    # North India has high dust load, South has humidity
+        return 1.18 if region_type == "North" else 1.08
     if month in [2, 3, 4, 5]:
-        return 1.4 if region_type == "North" else 1.2
-    
-    # MONSOON (Rain washes pollutants)
+        return 1.10 if region_type == "North" else 1.05
     if month in [6, 7, 8, 9]:
-        return 1.0 # Trust the model (rain is hard to bias)
-
-    # POST-MONSOON / PRE-WINTER (Crop Burning starts)
+        return 0.96 if region_type == "North" else 0.94
     if month in [10]:
-        return 1.6 if region_type == "North" else 1.2
-        
-    return 1.1
+        return 1.14 if region_type == "North" else 1.05
+    return 1.0
+
+def _weather_damping_factor(df: pd.DataFrame) -> pd.Series:
+    """Row-wise damping so seasonal prior doesn't over-correct."""
+    rainfall = (df.get('cloud_cover', 0).fillna(0) / 100.0).clip(0.0, 1.0)
+    wind = (df.get('wind_speed_10m', 0).fillna(0) / 30.0).clip(0.0, 1.0)
+    # More wind/cloud usually disperses pollutants; shrink seasonal boost in such cases.
+    return (1.0 - 0.35 * rainfall - 0.25 * wind).clip(0.65, 1.0)
 
 def apply_indian_context_bias(df: pd.DataFrame, city: str):
     if df.empty: return df
@@ -194,14 +186,16 @@ def apply_indian_context_bias(df: pd.DataFrame, city: str):
     # Get Dynamic Multiplier
     multiplier = get_seasonal_multiplier(current_month, region_type)
     
-    # Apply multiplier
-    if multiplier > 1.0:
-        df['pm2_5'] = df['pm2_5'] * multiplier
-        df['pm10'] = df['pm10'] * (multiplier * 0.95)
-        
-        # Nitrogen Dioxide bias for Metros (Traffic)
-        if region_type == "Metro" or region_type == "North":
-             df['nitrogen_dioxide'] = df['nitrogen_dioxide'] * 1.2
+    # Apply conservative and weather-aware multiplier
+    weather_factor = _weather_damping_factor(df)
+    effective_multiplier = 1.0 + (multiplier - 1.0) * weather_factor
+
+    df['pm2_5'] = df['pm2_5'] * effective_multiplier
+    df['pm10'] = df['pm10'] * (effective_multiplier * 0.97)
+
+    if region_type in ["Metro", "North"]:
+        no2_multiplier = 1.0 + 0.08 * weather_factor
+        df['nitrogen_dioxide'] = df['nitrogen_dioxide'] * no2_multiplier
 
     return df
 

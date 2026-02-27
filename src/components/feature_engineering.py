@@ -41,6 +41,7 @@ class FeatureEngineering:
         
         self.categorical_columns = fe_config.get("categorical_columns", ["city", "state"])
         self.encoding_method = fe_config.get("encoding_method", "label")
+        self.create_cyclical_features = fe_config.get("create_cyclical_features", False)
         
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -118,6 +119,15 @@ class FeatureEngineering:
         df['week_of_year'] = df['datetime'].dt.isocalendar().week.astype(int)
         df['is_weekend'] = (df['day_of_week'] >= 5).astype(int)
         df['quarter'] = df['datetime'].dt.quarter
+
+        # Cyclical encoding for seasonal/time patterns
+        if self.create_cyclical_features:
+            df['month_sin'] = np.sin(2 * np.pi * df['month'] / 12.0)
+            df['month_cos'] = np.cos(2 * np.pi * df['month'] / 12.0)
+            df['week_of_year_sin'] = np.sin(2 * np.pi * df['week_of_year'] / 52.0)
+            df['week_of_year_cos'] = np.cos(2 * np.pi * df['week_of_year'] / 52.0)
+            df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24.0)
+            df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24.0)
         
         # Season (Indian seasons - from notebook)
         def get_season(month):
@@ -302,6 +312,10 @@ class FeatureEngineering:
                 'year', 'month', 'day', 'hour', 'day_of_week', 'day_name',
                 'week_of_year', 'is_weekend', 'quarter', 'season', 'time_of_day'
             ],
+            "cyclical_features": [
+                'month_sin', 'month_cos', 'week_of_year_sin',
+                'week_of_year_cos', 'hour_sin', 'hour_cos'
+            ] if self.create_cyclical_features else [],
             "derived_features": [
                 'humidity_category', 'wind_category', 'is_raining', 'heavy_rain',
                 'aqi_category', 'pm25_category_india', 'festival_period', 'crop_burning_season'

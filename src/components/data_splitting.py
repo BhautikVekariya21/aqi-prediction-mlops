@@ -41,6 +41,7 @@ class DataSplitting:
         
         self.test_size = split_config.get("test_size", 0.15)
         self.validation_size = split_config.get("validation_size", 0.15)
+        self.split_method = split_config.get("split_method", "random")
         
         # Stratification settings (from notebook)
         self.stratify = split_config.get("stratify", True)
@@ -61,6 +62,7 @@ class DataSplitting:
         logger.info("Data Splitting initialized")
         logger.info(f"Test size: {self.test_size*100:.0f}%")
         logger.info(f"Validation size: {self.validation_size*100:.0f}%")
+        logger.info(f"Split method: {self.split_method}")
         logger.info(f"Stratified: {self.stratify}")
     
     def run(self) -> Tuple[str, str, str]:
@@ -101,111 +103,141 @@ class DataSplitting:
         city_col = df['city'].copy() if 'city' in df.columns else None
         state_col = df['state'].copy() if 'state' in df.columns else None
         
-        # Step 4: Create stratification bins (from notebook)
-        if self.stratify:
-            logger.info(f"\n4. Creating stratification bins")
-            y_bins = pd.cut(y, bins=self.stratify_bins, labels=False)
-            logger.info(f"   Bins: {self.stratify_bins}")
-            logger.info(f"   Distribution:")
-            for i, (low, high) in enumerate(zip(self.stratify_bins[:-1], self.stratify_bins[1:])):
-                count = (y_bins == i).sum()
-                pct = count / len(y_bins) * 100
-                logger.info(f"     {low:>4} - {high:>4}: {count:>7,} ({pct:>5.2f}%)")
+        # Step 4: Split data
+        if self.split_method == "time" and datetime_col is not None:
+            logger.info(f"\n4. Performing temporal split (no shuffling)")
+
+            order = np.argsort(datetime_col.values)
+            X_sorted = X.iloc[order].reset_index(drop=True)
+            y_sorted = y.iloc[order].reset_index(drop=True)
+            dt_sorted = datetime_col.iloc[order].reset_index(drop=True)
+            city_sorted = city_col.iloc[order].reset_index(drop=True) if city_col is not None else None
+            state_sorted = state_col.iloc[order].reset_index(drop=True) if state_col is not None else None
+
+            n_total = len(X_sorted)
+            n_test = int(round(n_total * self.test_size))
+            n_val = int(round(n_total * self.validation_size))
+            n_train = n_total - n_val - n_test
+
+            if n_train <= 0 or n_val <= 0 or n_test <= 0:
+                raise ValueError("Invalid split sizes for temporal split")
+
+            X_train = X_sorted.iloc[:n_train]
+            X_val = X_sorted.iloc[n_train:n_train + n_val]
+            X_test = X_sorted.iloc[n_train + n_val:]
+
+            y_train = y_sorted.iloc[:n_train]
+            y_val = y_sorted.iloc[n_train:n_train + n_val]
+            y_test = y_sorted.iloc[n_train + n_val:]
+
+            dt_train = dt_sorted.iloc[:n_train]
+            dt_val = dt_sorted.iloc[n_train:n_train + n_val]
+            dt_test = dt_sorted.iloc[n_train + n_val:]
+
+            city_train = city_sorted.iloc[:n_train] if city_sorted is not None else None
+            city_val = city_sorted.iloc[n_train:n_train + n_val] if city_sorted is not None else None
+            city_test = city_sorted.iloc[n_train + n_val:] if city_sorted is not None else None
+
+            state_train = state_sorted.iloc[:n_train] if state_sorted is not None else None
+            state_val = state_sorted.iloc[n_train:n_train + n_val] if state_sorted is not None else None
+            state_test = state_sorted.iloc[n_train + n_val:] if state_sorted is not None else None
+
         else:
-            y_bins = None
-        
-        # Step 5: First split - separate test set (from notebook)
-        logger.info(f"\n5. Splitting data (stratified random)")
-        
-        split_data = [X, y]
-        if datetime_col is not None:
-            split_data.append(datetime_col)
-        if city_col is not None:
-            split_data.append(city_col)
-        if state_col is not None:
-            split_data.append(state_col)
-        if y_bins is not None:
-            split_data.append(y_bins)
-        
-        # First split: train+val vs test
-        # train_test_split returns: X_temp, X_test, y_temp, y_test, dt_temp, dt_test, etc.
-        split_result = train_test_split(
-            *split_data,
-            test_size=self.test_size,
-            random_state=self.random_state,
-            stratify=y_bins if self.stratify else None,
-            shuffle=True
-        )
-        
-        # Unpack results (order: temp, test, temp, test, ...)
-        # For n inputs, we get 2*n outputs (alternating temp and test)
-        n_inputs = len(split_data)
-        X_temp = split_result[0]
-        X_test = split_result[1]
-        y_temp = split_result[2]
-        y_test = split_result[3]
-        
-        idx = 4
-        dt_temp = split_result[idx] if datetime_col is not None else None
-        dt_test = split_result[idx + 1] if datetime_col is not None else None
-        idx += 2 if datetime_col is not None else 0
-        
-        city_temp = split_result[idx] if city_col is not None else None
-        city_test = split_result[idx + 1] if city_col is not None else None
-        idx += 2 if city_col is not None else 0
-        
-        state_temp = split_result[idx] if state_col is not None else None
-        state_test = split_result[idx + 1] if state_col is not None else None
-        idx += 2 if state_col is not None else 0
-        
-        bins_temp = split_result[idx] if y_bins is not None else None
-        bins_test = split_result[idx + 1] if y_bins is not None else None
-        
-        # Second split: train vs validation (from notebook)
-        val_size_adjusted = self.validation_size / (1 - self.test_size)
-        
-        # Second split: train vs validation
-        temp_data2 = [X_temp, y_temp]
-        if dt_temp is not None:
-            temp_data2.append(dt_temp)
-        if city_temp is not None:
-            temp_data2.append(city_temp)
-        if state_temp is not None:
-            temp_data2.append(state_temp)
-        
-        split_result2 = train_test_split(
-            *temp_data2,
-            test_size=val_size_adjusted,
-            random_state=self.random_state,
-            stratify=bins_temp if self.stratify else None,
-            shuffle=True
-        )
-        
-        # Extract train and val data
-        X_train = split_result2[0]
-        X_val = split_result2[1]
-        y_train = split_result2[2]
-        y_val = split_result2[3]
-        
-        idx = 4
-        dt_train = split_result2[idx] if dt_temp is not None else None
-        dt_val = split_result2[idx + 1] if dt_temp is not None else None
-        idx += 2 if dt_temp is not None else 0
-        
-        city_train = split_result2[idx] if city_temp is not None else None
-        city_val = split_result2[idx + 1] if city_temp is not None else None
-        idx += 2 if city_temp is not None else 0
-        
-        state_train = split_result2[idx] if state_temp is not None else None
-        state_val = split_result2[idx + 1] if state_temp is not None else None
-        
+            # Step 4: Create stratification bins (from notebook)
+            if self.stratify:
+                logger.info(f"\n4. Creating stratification bins")
+                y_bins = pd.cut(y, bins=self.stratify_bins, labels=False)
+                logger.info(f"   Bins: {self.stratify_bins}")
+                logger.info(f"   Distribution:")
+                for i, (low, high) in enumerate(zip(self.stratify_bins[:-1], self.stratify_bins[1:])):
+                    count = (y_bins == i).sum()
+                    pct = count / len(y_bins) * 100
+                    logger.info(f"     {low:>4} - {high:>4}: {count:>7,} ({pct:>5.2f}%)")
+            else:
+                y_bins = None
+
+            # Step 5: First split - separate test set (from notebook)
+            logger.info(f"\n5. Splitting data (stratified random)")
+
+            split_data = [X, y]
+            if datetime_col is not None:
+                split_data.append(datetime_col)
+            if city_col is not None:
+                split_data.append(city_col)
+            if state_col is not None:
+                split_data.append(state_col)
+            if y_bins is not None:
+                split_data.append(y_bins)
+
+            split_result = train_test_split(
+                *split_data,
+                test_size=self.test_size,
+                random_state=self.random_state,
+                stratify=y_bins if self.stratify else None,
+                shuffle=True
+            )
+
+            X_temp = split_result[0]
+            X_test = split_result[1]
+            y_temp = split_result[2]
+            y_test = split_result[3]
+
+            idx = 4
+            dt_temp = split_result[idx] if datetime_col is not None else None
+            dt_test = split_result[idx + 1] if datetime_col is not None else None
+            idx += 2 if datetime_col is not None else 0
+
+            city_temp = split_result[idx] if city_col is not None else None
+            city_test = split_result[idx + 1] if city_col is not None else None
+            idx += 2 if city_col is not None else 0
+
+            state_temp = split_result[idx] if state_col is not None else None
+            state_test = split_result[idx + 1] if state_col is not None else None
+            idx += 2 if state_col is not None else 0
+
+            bins_temp = split_result[idx] if y_bins is not None else None
+
+            val_size_adjusted = self.validation_size / (1 - self.test_size)
+            temp_data2 = [X_temp, y_temp]
+            if dt_temp is not None:
+                temp_data2.append(dt_temp)
+            if city_temp is not None:
+                temp_data2.append(city_temp)
+            if state_temp is not None:
+                temp_data2.append(state_temp)
+
+            split_result2 = train_test_split(
+                *temp_data2,
+                test_size=val_size_adjusted,
+                random_state=self.random_state,
+                stratify=bins_temp if self.stratify else None,
+                shuffle=True
+            )
+
+            X_train = split_result2[0]
+            X_val = split_result2[1]
+            y_train = split_result2[2]
+            y_val = split_result2[3]
+
+            idx = 4
+            dt_train = split_result2[idx] if dt_temp is not None else None
+            dt_val = split_result2[idx + 1] if dt_temp is not None else None
+            idx += 2 if dt_temp is not None else 0
+
+            city_train = split_result2[idx] if city_temp is not None else None
+            city_val = split_result2[idx + 1] if city_temp is not None else None
+            idx += 2 if city_temp is not None else 0
+
+            state_train = split_result2[idx] if state_temp is not None else None
+            state_val = split_result2[idx + 1] if state_temp is not None else None
+
         logger.info(f"   OK Split complete:")
         logger.info(f"     Train: {len(X_train):,} ({len(X_train)/len(df)*100:.1f}%)")
         logger.info(f"     Val:   {len(X_val):,} ({len(X_val)/len(df)*100:.1f}%)")
         logger.info(f"     Test:  {len(X_test):,} ({len(X_test)/len(df)*100:.1f}%)")
         
         # Step 6: Verify stratification (from notebook)
-        if self.stratify:
+        if self.stratify and self.split_method != "time":
             logger.info(f"\n6. Verifying stratification")
             self._verify_stratification(y_train, y_val, y_test)
         
