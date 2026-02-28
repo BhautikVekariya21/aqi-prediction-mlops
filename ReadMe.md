@@ -4,13 +4,18 @@
 
 [![Python 3.10](https://img.shields.io/badge/Python-3.10-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.104.0-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://hub.docker.com/r/bhautikvekariya21/aqi-prediction-api)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Deployed-FFD21E?style=for-the-badge)](https://huggingface.co/spaces/bhautikvekariya21/aqi-prediction-mlops)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
 **A production-grade, memory-optimized air quality forecasting engine for 29 Indian cities.**
 
-[**🚀 Live API Demo**](https://bhautikvekariya21-aqi-prediction-mlops.hf.space/docs) · [**🌐 Live Website**](https://aqi-predictor.lovable.app) · [**🐳 Docker Hub**](https://hub.docker.com/r/bhautikvekariya21/aqi-prediction-api) · [**🐛 Report Bug**](../../issues)
+<p align="center">
+  <a href="https://bhautikvekariya21-aqi-prediction-mlops.hf.space/docs"><img src="https://img.shields.io/badge/Live%20API-Demo-0A66C2?style=for-the-badge&logo=fastapi&logoColor=white" alt="Live API Demo"/></a>
+  <a href="https://aqi-predictor.lovable.app"><img src="https://img.shields.io/badge/Website-Open-2EA44F?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Live Website"/></a>
+  <a href="https://www.youtube.com/"><img src="https://img.shields.io/badge/YouTube-Watch%20Demo-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube"/></a>
+  <a href="https://hub.docker.com/r/bhautikvekariya21/aqi-prediction-api"><img src="https://img.shields.io/badge/Docker%20Hub-Container-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker Hub"/></a>
+  <a href="../../issues"><img src="https://img.shields.io/badge/Report-Bug-D73A49?style=for-the-badge&logo=github&logoColor=white" alt="Report Bug"/></a>
+</p>
 
 </div>
 
@@ -43,24 +48,47 @@ It integrates **real-time meteorological data** from Open-Meteo with a trained *
 
 ## 🏗️ Architecture
 
-```mermaid
-graph TD
-    User[User / Frontend] -->|GET /predict/Delhi| API[FastAPI Gateway]
-    API -->|Parallel Request| Weather[Open-Meteo API]
-    Weather -->|Real-time Data| Engine[Inference Engine]
-    
-    subgraph "Inference Engine"
-        Pre[Preprocessor (Lite)]
-        XGB[XGBoost Model (JSON.GZ)]
-        Physics[Physics Calibration Layer]
-        
-        Pre --> XGB
-        XGB --> Physics
-    end
-    
-    Physics -->|Final AQI| API
-    API -->|JSON Response| User
-```
+### Request-to-Prediction Flow
+
+1. **Client Request** → User or frontend calls `GET /predict/{city}` (or bulk endpoint).
+2. **FastAPI Gateway** → Validates inputs and routes request to inference services.
+3. **Weather Fetch Layer** → Pulls real-time meteorological features from Open-Meteo.
+4. **Preprocessing Layer** → Aligns incoming weather data to the model feature schema.
+5. **XGBoost Inference** → Generates baseline AQI prediction using the optimized model artifact.
+6. **Physics Calibration Layer** → Applies safety floor + seasonal calibration during extreme conditions.
+7. **Response Builder** → Returns final AQI, category, and forecast payload as JSON.
+
+### Runtime Components
+
+- **API Layer:** FastAPI app serving prediction endpoints.
+- **Inference Layer:** Lightweight predictor + model loader for low-memory environments.
+- **External Dependency:** Open-Meteo API for live weather inputs.
+- **Concurrency:** ThreadPoolExecutor for multi-city parallel prediction.
+- **Reliability Controls:** Shared HTTP session, retries, and backoff handling.
+
+### Input and Output Contract (High-Level)
+
+- **Input Sources:**
+  - Path parameter: `city` (e.g., `Delhi`, `Mumbai`).
+  - Query parameter: `days` forecast horizon (default: `2`).
+  - Manual endpoint payload: complete model feature vector for simulation use-cases.
+- **Output Fields:**
+  - Current AQI value and category.
+  - Time-series/hourly forecast for requested horizon.
+  - Metadata required by dashboard clients for rendering status cards.
+
+### Resilience and Fallback Strategy
+
+- **External API instability:** Retries with exponential backoff reduce transient failures.
+- **Connection overhead:** Shared HTTP session keeps latency low via connection reuse.
+- **Extreme pollution edge-cases:** Physics floor prevents unsafe underestimation.
+- **Multi-city burst traffic:** Parallel workers keep bulk endpoint response time stable.
+
+### Deployment Notes
+
+- Designed for low-memory cloud runtimes (free/shared tiers).
+- Model artifact is compressed and loaded through a lightweight path.
+- API service is container-ready and published for direct Docker deployment.
 
 ---
 
