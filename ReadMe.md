@@ -1,3 +1,13 @@
+---
+title: AQI Prediction MLOps
+emoji: 🌍
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_file: app.py
+pinned: false
+---
+
 # 🌍 AQI Prediction MLOps (Ultra-Lite & Physics-Aware)
 
 <div align="center">
