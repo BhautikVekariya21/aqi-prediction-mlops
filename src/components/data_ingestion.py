@@ -164,23 +164,26 @@ class DataIngestion:
             
             try:
                 city_df = self._download_city_data(city_name, city_info)
-                
+
                 if city_df is not None:
                     all_data.append(city_df)
                 else:
                     failed_cities.append(city_name)
-                
+
                 # Batch cooldown (from notebook)
                 if idx % self.cities_per_batch == 0 and idx < len(self.cities):
                     logger.info("\nCooldown API cooldown (90 seconds)...")
                     time.sleep(90)
                 else:
                     time.sleep(5)
-            
+
             except Exception as e:
+                # Halt-and-report: do not silently continue with a partial dataset.
                 logger.error(f"Error processing {city_name}: {e}")
-                failed_cities.append(city_name)
-                time.sleep(30)
+                raise RuntimeError(
+                    f"Data ingestion halted at {city_name} "
+                    f"({idx}/{len(self.cities)}): {e}"
+                ) from e
         
         # Combine all cities
         if not all_data:

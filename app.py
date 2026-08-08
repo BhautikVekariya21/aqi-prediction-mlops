@@ -1,22 +1,29 @@
 """
-AQI Prediction API - Year-Round Indian Standard
-Version: 5.0.0
+AQI Prediction API — Indian CPCB Standard
+Version: 6.0.0
+
+Design contract:
+  - Feature vector built identically to training (7 CPCB rolling avgs + instantaneous + datetime)
+  - No seasonal multipliers, no physics floor, no post-hoc distortions
+  - Encoders loaded from encoders.json (written by feature_engineering stage)
+  - Feature list loaded from features.txt (written by feature_selection stage)
+  - Output clamped to [0, 500] CPCB scale
 """
 
-import os
 import gc
-import sys
 import gzip
+import json
+import os
 import tempfile
 import concurrent.futures
-from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Dict
+from pathlib import Path
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-import xgboost as xgb
 import requests
+import xgboost as xgb
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -24,429 +31,388 @@ from pydantic import BaseModel
 gc.collect()
 
 # =============================================================================
-# CONFIGURATION
+# STARTUP — load model artifacts
 # =============================================================================
 
-MODEL_DIR = Path(".") 
-API_VERSION = "5.0.0 (Year-Round Indian Logic)"
-EXTERNAL_API_TIMEOUT = 10.0 
+MODEL_DIR = Path(".")
+API_VERSION = "6.0.0 (CPCB)"
+EXTERNAL_API_TIMEOUT = 10.0
 
-REQUIRED_FEATURES = [
-    'wind_gusts_10m', 'week_of_year', 'state_encoded', 'pm2_5', 'sulphur_dioxide',
-    'longitude', 'surface_pressure', 'latitude', 'dust', 'pressure_msl',
-    'pm10', 'cloud_cover', 'nitrogen_dioxide', 'year', 'cloud_cover_low',
-    'relative_humidity_2m', 'month', 'carbon_monoxide', 'quarter',
-    'wind_speed_10m', 'is_day', 'city_encoded', 'day', 'ozone',
-    'cloud_cover_high', 'is_weekend', 'hour', 'aerosol_optical_depth',
-    'dew_point_2m', 'cloud_cover_mid', 'wind_direction_10m'
-]
+print("Starting AQI Prediction API (CPCB standard)...")
 
-print("🚀 Starting AQI Prediction API (Year-Round Mode)...")
-
-# =============================================================================
-# GLOBAL SESSION
-# =============================================================================
-session = requests.Session()
-retry = requests.adapters.Retry(total=2, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
-adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry)
-session.mount('https://', adapter)
-
-HEADERS = {"User-Agent": "AQI-Indian-App/5.0"}
-
-# =============================================================================
-# LOAD MODEL & CITIES
-# =============================================================================
-print("📦 Loading model...")
-model = None
+model: Optional[xgb.Booster] = None
 try:
-    if (MODEL_DIR / "model.json.gz").exists():
-        with gzip.open(MODEL_DIR / "model.json.gz", 'rb') as f:
-            model = xgb.Booster()
-            with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as tmp:
-                tmp.write(f.read()); tmp_path = tmp.name
-            model.load_model(tmp_path); os.unlink(tmp_path)
-    elif (MODEL_DIR / "model.json").exists():
-        model = xgb.Booster(); model.load_model(str(MODEL_DIR / "model.json"))
-except Exception as e: print(f"❌ Error: {e}")
+    gz = MODEL_DIR / "model.json.gz"
+    plain = MODEL_DIR / "model.json"
+    if gz.exists():
+        with gzip.open(gz, "rb") as fh, tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            tmp.write(fh.read())
+            tmp_path = tmp.name
+        model = xgb.Booster()
+        model.load_model(tmp_path)
+        os.unlink(tmp_path)
+    elif plain.exists():
+        model = xgb.Booster()
+        model.load_model(str(plain))
+    print(f"Model loaded: {gz if gz.exists() else plain}")
+except Exception as exc:
+    print(f"Model load failed: {exc}")
 
-CITIES = {
-    "Agartala": {"lat": 23.8315, "lon": 91.2868, "state": "Tripura"},
-    "Ahmedabad": {"lat": 23.0225, "lon": 72.5714, "state": "Gujarat"},
-    "Aizawl": {"lat": 23.7271, "lon": 92.7176, "state": "Mizoram"},
-    "Bengaluru": {"lat": 12.9716, "lon": 77.5946, "state": "Karnataka"},
-    "Bhopal": {"lat": 23.2599, "lon": 77.4126, "state": "Madhya Pradesh"},
-    "Bhubaneswar": {"lat": 20.2961, "lon": 85.8245, "state": "Odisha"},
-    "Chandigarh": {"lat": 30.7333, "lon": 76.7794, "state": "Punjab"},
-    "Chennai": {"lat": 13.0827, "lon": 80.2707, "state": "Tamil Nadu"},
-    "Dehradun": {"lat": 30.3165, "lon": 78.0322, "state": "Uttarakhand"},
-    "Delhi": {"lat": 28.6139, "lon": 77.2090, "state": "Delhi"},
-    "Gangtok": {"lat": 27.3389, "lon": 88.6065, "state": "Sikkim"},
-    "Gurugram": {"lat": 28.4595, "lon": 77.0266, "state": "Haryana"},
-    "Guwahati": {"lat": 26.1445, "lon": 91.7362, "state": "Assam"},
-    "Hyderabad": {"lat": 17.3850, "lon": 78.4867, "state": "Telangana"},
-    "Imphal": {"lat": 24.8170, "lon": 93.9368, "state": "Manipur"},
-    "Itanagar": {"lat": 27.0844, "lon": 93.6053, "state": "Arunachal Pradesh"},
-    "Jaipur": {"lat": 26.9124, "lon": 75.7873, "state": "Rajasthan"},
-    "Kohima": {"lat": 25.6751, "lon": 94.1086, "state": "Nagaland"},
-    "Kolkata": {"lat": 22.5726, "lon": 88.3639, "state": "West Bengal"},
-    "Lucknow": {"lat": 26.8467, "lon": 80.9462, "state": "Uttar Pradesh"},
-    "Mumbai": {"lat": 19.0760, "lon": 72.8777, "state": "Maharashtra"},
-    "Panaji": {"lat": 15.4909, "lon": 73.8278, "state": "Goa"},
-    "Patna": {"lat": 25.5941, "lon": 85.1376, "state": "Bihar"},
-    "Raipur": {"lat": 21.2514, "lon": 81.6296, "state": "Chhattisgarh"},
-    "Ranchi": {"lat": 23.3441, "lon": 85.3096, "state": "Jharkhand"},
-    "Shillong": {"lat": 25.5788, "lon": 91.8933, "state": "Meghalaya"},
-    "Shimla": {"lat": 31.1048, "lon": 77.1734, "state": "Himachal Pradesh"},
-    "Thiruvananthapuram": {"lat": 8.5241, "lon": 76.9366, "state": "Kerala"},
-    "Visakhapatnam": {"lat": 17.6868, "lon": 83.2185, "state": "Andhra Pradesh"},
-    "Noida": {"lat": 28.5355, "lon": 77.3910, "state": "Uttar Pradesh"},
-}
-CITY_ENC = {c: i for i, c in enumerate(sorted(CITIES.keys()))}
-STATES = sorted(set(v['state'] for v in CITIES.values()))
-STATE_ENC = {s: i for i, s in enumerate(STATES)}
-
-# =============================================================================
-# 1. INDIAN AQI LOGIC (Official CPCB Breakpoints)
-# =============================================================================
-
-def get_sub_index(conc, breakpoints):
-    """Interpolates concentration to AQI sub-index"""
-    for (low_c, high_c, low_i, high_i) in breakpoints:
-        if low_c <= conc <= high_c:
-            return low_i + (high_i - low_i) * (conc - low_c) / (high_c - low_c)
-    last = breakpoints[-1]
-    if conc > last[1]:
-        return last[3] + (conc - last[1]) * 1.5 
-    return 0
-
-def calculate_indian_aqi(pm25: float, pm10: float) -> float:
-    """
-    Converts raw PM2.5/PM10 (µg/m³) to Indian AQI (CPCB Standard).
-    """
-    pm25_breakpoints = [
-        (0, 30, 0, 50), (30, 60, 51, 100), (60, 90, 101, 200),
-        (90, 120, 201, 300), (120, 250, 301, 400), (250, 5000, 401, 5000)
-    ]
-    pm10_breakpoints = [
-        (0, 50, 0, 50), (50, 100, 51, 100), (100, 250, 101, 200),
-        (250, 350, 201, 300), (350, 430, 301, 400), (430, 5000, 401, 5000)
-    ]
-    val_pm25 = get_sub_index(pm25, pm25_breakpoints)
-    val_pm10 = get_sub_index(pm10, pm10_breakpoints)
-    return max(val_pm25, val_pm10)
-
-
-def apply_physics_floor(predicted_aqi: float, pm25: float, pm10: float) -> float:
-    """Apply floor only for severe pollution episodes to avoid high bias."""
-    cpcb_val = calculate_indian_aqi(pm25, pm10)
-    severe_episode = (pm25 >= 250) or (pm10 >= 350)
-    if severe_episode:
-        return max(predicted_aqi, cpcb_val)
-    return predicted_aqi
-
-def aqi_category(aqi: float) -> Dict:
-    if aqi <= 50: return {"cat": "Good", "emoji": "🟢", "color": "#00e400"}
-    elif aqi <= 100: return {"cat": "Satisfactory", "emoji": "🟡", "color": "#ffff00"}
-    elif aqi <= 200: return {"cat": "Moderate", "emoji": "🟠", "color": "#ff7e00"}
-    elif aqi <= 300: return {"cat": "Poor", "emoji": "🔴", "color": "#ff0000"}
-    elif aqi <= 400: return {"cat": "Very Poor", "emoji": "🟣", "color": "#8f3f97"}
-    else: return {"cat": "Severe", "emoji": "🟤", "color": "#7e0023"}
-
-# =============================================================================
-# 2. YEAR-ROUND REGIONAL BIAS (The "Smart" Fix)
-# =============================================================================
-
-def get_seasonal_multiplier(month: int, region_type: str) -> float:
-    """Conservative seasonal prior used as a soft adjustment."""
-    if month in [11, 12, 1]:
-        return 1.18 if region_type == "North" else 1.08
-    if month in [2, 3, 4, 5]:
-        return 1.10 if region_type == "North" else 1.05
-    if month in [6, 7, 8, 9]:
-        return 0.96 if region_type == "North" else 0.94
-    if month in [10]:
-        return 1.14 if region_type == "North" else 1.05
-    return 1.0
-
-def _weather_damping_factor(df: pd.DataFrame) -> pd.Series:
-    """Row-wise damping so seasonal prior doesn't over-correct."""
-    rainfall = (df.get('cloud_cover', 0).fillna(0) / 100.0).clip(0.0, 1.0)
-    wind = (df.get('wind_speed_10m', 0).fillna(0) / 30.0).clip(0.0, 1.0)
-    # More wind/cloud usually disperses pollutants; shrink seasonal boost in such cases.
-    return (1.0 - 0.35 * rainfall - 0.25 * wind).clip(0.65, 1.0)
-
-def apply_indian_context_bias(df: pd.DataFrame, city: str):
-    if df.empty: return df
-    
-    current_month = df['month'].iloc[0]
-    
-    # Region Definitions
-    NORTH_INDIA = ["Delhi", "Noida", "Gurugram", "Ghaziabad", "Lucknow", "Kanpur", "Patna", "Chandigarh", "Amritsar", "Dehradun", "Jaipur"]
-    METROS = ["Mumbai", "Kolkata", "Ahmedabad", "Hyderabad", "Bengaluru", "Chennai", "Pune"]
-    
-    # Determine Region Type
-    if city in NORTH_INDIA:
-        region_type = "North"
-    elif city in METROS:
-        region_type = "Metro"
+REQUIRED_FEATURES: List[str] = []
+try:
+    fp = MODEL_DIR / "features.txt"
+    if fp.exists():
+        REQUIRED_FEATURES = [ln.strip() for ln in fp.read_text().splitlines() if ln.strip()]
+        print(f"Features loaded: {len(REQUIRED_FEATURES)}")
     else:
-        region_type = "Other"
+        print("WARNING: features.txt not found — predictions disabled")
+except Exception as exc:
+    print(f"Feature list load failed: {exc}")
 
-    # Get Dynamic Multiplier
-    multiplier = get_seasonal_multiplier(current_month, region_type)
-    
-    # Apply conservative and weather-aware multiplier
-    weather_factor = _weather_damping_factor(df)
-    effective_multiplier = 1.0 + (multiplier - 1.0) * weather_factor
+ENCODERS: Dict[str, Dict] = {}
+try:
+    ep = MODEL_DIR / "encoders.json"
+    if ep.exists():
+        ENCODERS = json.loads(ep.read_text())
+        print(f"Encoders loaded: {list(ENCODERS.keys())}")
+    else:
+        print("WARNING: encoders.json not found")
+except Exception as exc:
+    print(f"Encoders load failed: {exc}")
 
-    df['pm2_5'] = df['pm2_5'] * effective_multiplier
-    df['pm10'] = df['pm10'] * (effective_multiplier * 0.97)
-
-    if region_type in ["Metro", "North"]:
-        no2_multiplier = 1.0 + 0.08 * weather_factor
-        df['nitrogen_dioxide'] = df['nitrogen_dioxide'] * no2_multiplier
-
-    return df
+CITY_ENC: Dict[str, int] = ENCODERS.get("city", {})
+STATE_ENC: Dict[str, int] = ENCODERS.get("state", {})
 
 # =============================================================================
-# DATA PIPELINE
+# CITIES — 29 training cities (Noida excluded: not present in training data)
 # =============================================================================
 
-def fetch_data(lat: float, lon: float, days: int):
+CITIES: Dict[str, Dict] = {
+    "Agartala":          {"lat": 23.8315, "lon": 91.2868, "state": "Tripura"},
+    "Ahmedabad":         {"lat": 23.0225, "lon": 72.5714, "state": "Gujarat"},
+    "Aizawl":            {"lat": 23.7271, "lon": 92.7176, "state": "Mizoram"},
+    "Bengaluru":         {"lat": 12.9716, "lon": 77.5946, "state": "Karnataka"},
+    "Bhopal":            {"lat": 23.2599, "lon": 77.4126, "state": "Madhya Pradesh"},
+    "Bhubaneswar":       {"lat": 20.2961, "lon": 85.8245, "state": "Odisha"},
+    "Chandigarh":        {"lat": 30.7333, "lon": 76.7794, "state": "Punjab"},
+    "Chennai":           {"lat": 13.0827, "lon": 80.2707, "state": "Tamil Nadu"},
+    "Dehradun":          {"lat": 30.3165, "lon": 78.0322, "state": "Uttarakhand"},
+    "Delhi":             {"lat": 28.6139, "lon": 77.2090, "state": "Delhi"},
+    "Gangtok":           {"lat": 27.3389, "lon": 88.6065, "state": "Sikkim"},
+    "Gurugram":          {"lat": 28.4595, "lon": 77.0266, "state": "Haryana"},
+    "Guwahati":          {"lat": 26.1445, "lon": 91.7362, "state": "Assam"},
+    "Hyderabad":         {"lat": 17.3850, "lon": 78.4867, "state": "Telangana"},
+    "Imphal":            {"lat": 24.8170, "lon": 93.9368, "state": "Manipur"},
+    "Itanagar":          {"lat": 27.0844, "lon": 93.6053, "state": "Arunachal Pradesh"},
+    "Jaipur":            {"lat": 26.9124, "lon": 75.7873, "state": "Rajasthan"},
+    "Kohima":            {"lat": 25.6751, "lon": 94.1086, "state": "Nagaland"},
+    "Kolkata":           {"lat": 22.5726, "lon": 88.3639, "state": "West Bengal"},
+    "Lucknow":           {"lat": 26.8467, "lon": 80.9462, "state": "Uttar Pradesh"},
+    "Mumbai":            {"lat": 19.0760, "lon": 72.8777, "state": "Maharashtra"},
+    "Panaji":            {"lat": 15.4909, "lon": 73.8278, "state": "Goa"},
+    "Patna":             {"lat": 25.5941, "lon": 85.1376, "state": "Bihar"},
+    "Raipur":            {"lat": 21.2514, "lon": 81.6296, "state": "Chhattisgarh"},
+    "Ranchi":            {"lat": 23.3441, "lon": 85.3096, "state": "Jharkhand"},
+    "Shillong":          {"lat": 25.5788, "lon": 91.8933, "state": "Meghalaya"},
+    "Shimla":            {"lat": 31.1048, "lon": 77.1734, "state": "Himachal Pradesh"},
+    "Thiruvananthapuram":{"lat": 8.5241,  "lon": 76.9366, "state": "Kerala"},
+    "Visakhapatnam":     {"lat": 17.6868, "lon": 83.2185, "state": "Andhra Pradesh"},
+}
+STATES = sorted({v["state"] for v in CITIES.values()})
+
+# =============================================================================
+# CPCB CATEGORY HELPER
+# =============================================================================
+
+def cpcb_category(aqi: float) -> Dict:
+    if aqi <= 50:    return {"cat": "Good",        "emoji": "🟢", "color": "#00e400"}
+    if aqi <= 100:   return {"cat": "Satisfactory", "emoji": "🟡", "color": "#90ee90"}
+    if aqi <= 200:   return {"cat": "Moderate",     "emoji": "🟠", "color": "#ff7e00"}
+    if aqi <= 300:   return {"cat": "Poor",         "emoji": "🔴", "color": "#ff0000"}
+    if aqi <= 400:   return {"cat": "Very Poor",    "emoji": "🟣", "color": "#8f3f97"}
+    return             {"cat": "Severe",        "emoji": "🟤", "color": "#7e0023"}
+
+# =============================================================================
+# HTTP SESSION
+# =============================================================================
+
+_session = requests.Session()
+_retry = requests.adapters.Retry(total=2, backoff_factor=0.5,
+                                 status_forcelist=[429, 500, 502, 503, 504])
+_adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20,
+                                         max_retries=_retry)
+_session.mount("https://", _adapter)
+_HEADERS = {"User-Agent": "AQI-CPCB-App/6.0"}
+
+# =============================================================================
+# DATA FETCH  (past_days=2 gives 48 h of history for accurate 24 h averages)
+# =============================================================================
+
+def _fetch(lat: float, lon: float, forecast_days: int = 2):
+    base = {"latitude": lat, "longitude": lon, "timezone": "Asia/Kolkata",
+            "past_days": 2, "forecast_days": forecast_days}
+    w = {**base, "hourly": ["relative_humidity_2m", "dew_point_2m",
+                             "wind_speed_10m", "wind_gusts_10m", "wind_direction_10m",
+                             "pressure_msl", "surface_pressure", "cloud_cover", "is_day"]}
+    aq = {**base, "hourly": ["pm2_5", "pm10", "carbon_monoxide", "nitrogen_dioxide",
+                              "sulphur_dioxide", "ozone", "ammonia",
+                              "dust", "aerosol_optical_depth"]}
     try:
-        params = {"latitude": lat, "longitude": lon, "timezone": "Asia/Kolkata", "forecast_days": days}
-        w_params = params.copy()
-        w_params["hourly"] = ["relative_humidity_2m", "dew_point_2m", "wind_speed_10m",
-                              "wind_gusts_10m", "wind_direction_10m", "pressure_msl",
-                              "surface_pressure", "cloud_cover", "cloud_cover_low",
-                              "cloud_cover_mid", "cloud_cover_high", "is_day"]
-        aq_params = params.copy()
-        aq_params["hourly"] = ["pm2_5", "pm10", "carbon_monoxide", "nitrogen_dioxide",
-                               "sulphur_dioxide", "ozone", "dust", "aerosol_optical_depth"]
+        weather = _session.get("https://api.open-meteo.com/v1/forecast",
+                               params=w, headers=_HEADERS,
+                               timeout=EXTERNAL_API_TIMEOUT).json()
+        air_q   = _session.get("https://air-quality-api.open-meteo.com/v1/air-quality",
+                               params=aq, headers=_HEADERS,
+                               timeout=EXTERNAL_API_TIMEOUT).json()
+        return weather, air_q
+    except Exception:
+        return None, None
 
-        weather = session.get("https://api.open-meteo.com/v1/forecast", params=w_params, headers=HEADERS, timeout=EXTERNAL_API_TIMEOUT).json()
-        air_quality = session.get("https://air-quality-api.open-meteo.com/v1/air-quality", params=aq_params, headers=HEADERS, timeout=EXTERNAL_API_TIMEOUT).json()
 
-        return weather, air_quality
-    except Exception: return None, None
+def _sv(d: dict, key: str, idx: int, default: float) -> float:
+    """Safe value getter from Open-Meteo hourly dict."""
+    vals = d.get(key, [])
+    if idx < len(vals) and vals[idx] is not None:
+        return float(vals[idx])
+    return default
 
-def safe_get(data_dict, key, index, default, total_length):
-    try:
-        values = data_dict.get(key, [default] * total_length)
-        return values[index] if index < len(values) and values[index] is not None else default
-    except: return default
 
-def prepare_features(weather: Dict, air_quality: Dict, city: str) -> Optional[pd.DataFrame]:
+def _build_df(weather: dict, air_q: dict, city: str) -> Optional[pd.DataFrame]:
+    """
+    Build a full time-series DataFrame (history + forecast) for one city,
+    including the 7 CPCB rolling-average features that mirror training exactly.
+    """
     city_info = CITIES[city]
-    weather_hourly = weather.get('hourly', {})
-    air_hourly = air_quality.get('hourly', {})
-    n_hours = len(weather_hourly.get('time', []))
-    if n_hours == 0: return None
-    
+    wh = weather.get("hourly", {})
+    ah = air_q.get("hourly", {})
+    times = wh.get("time", [])
+    if not times:
+        return None
+
     rows = []
-    limit = n_hours if n_hours < 48 else 48 
-    for i in range(limit):
-        try:
-            dt = pd.to_datetime(weather_hourly['time'][i])
-            row = {
-                'year': dt.year, 'month': dt.month, 'day': dt.day, 'hour': dt.hour,
-                'quarter': (dt.month - 1) // 3 + 1, 'week_of_year': dt.isocalendar()[1],
-                'is_weekend': 1 if dt.dayofweek >= 5 else 0,
-                'is_day': safe_get(weather_hourly, 'is_day', i, 1, n_hours),
-                'latitude': city_info['lat'], 'longitude': city_info['lon'],
-                'city_encoded': CITY_ENC.get(city, 0), 'state_encoded': STATE_ENC.get(city_info['state'], 0),
-                'pm2_5': safe_get(air_hourly, 'pm2_5', i, 50, n_hours),
-                'pm10': safe_get(air_hourly, 'pm10', i, 80, n_hours),
-                'ozone': safe_get(air_hourly, 'ozone', i, 50, n_hours),
-                'nitrogen_dioxide': safe_get(air_hourly, 'nitrogen_dioxide', i, 30, n_hours),
-                'sulphur_dioxide': safe_get(air_hourly, 'sulphur_dioxide', i, 10, n_hours),
-                'carbon_monoxide': safe_get(air_hourly, 'carbon_monoxide', i, 500, n_hours),
-                'dust': safe_get(air_hourly, 'dust', i, 10, n_hours),
-                'aerosol_optical_depth': safe_get(air_hourly, 'aerosol_optical_depth', i, 0.3, n_hours),
-                'relative_humidity_2m': safe_get(weather_hourly, 'relative_humidity_2m', i, 60, n_hours),
-                'dew_point_2m': safe_get(weather_hourly, 'dew_point_2m', i, 15, n_hours),
-                'wind_speed_10m': safe_get(weather_hourly, 'wind_speed_10m', i, 15, n_hours),
-                'wind_gusts_10m': safe_get(weather_hourly, 'wind_gusts_10m', i, 20, n_hours),
-                'wind_direction_10m': safe_get(weather_hourly, 'wind_direction_10m', i, 180, n_hours),
-                'pressure_msl': safe_get(weather_hourly, 'pressure_msl', i, 1013, n_hours),
-                'surface_pressure': safe_get(weather_hourly, 'surface_pressure', i, 1013, n_hours),
-                'cloud_cover': safe_get(weather_hourly, 'cloud_cover', i, 30, n_hours),
-                'cloud_cover_low': safe_get(weather_hourly, 'cloud_cover_low', i, 0, n_hours),
-                'cloud_cover_mid': safe_get(weather_hourly, 'cloud_cover_mid', i, 0, n_hours),
-                'cloud_cover_high': safe_get(weather_hourly, 'cloud_cover_high', i, 0, n_hours),
-                'datetime': dt,
-            }
-            rows.append(row)
-        except Exception: continue
-    
-    df = pd.DataFrame(rows) if rows else None
-    
-    # Keep raw pollutant values for calibration/output, then apply model-only contextual bias
-    if df is not None:
-        for col in ['pm2_5', 'pm10', 'nitrogen_dioxide']:
-            df[f'raw_{col}'] = df[col]
-        df = apply_indian_context_bias(df, city)
+    for i, ts in enumerate(times):
+        dt = pd.to_datetime(ts)
+        rows.append({
+            "datetime":           dt,
+            "pm2_5":              _sv(ah, "pm2_5",              i, 50.0),
+            "pm10":               _sv(ah, "pm10",               i, 80.0),
+            "carbon_monoxide":    _sv(ah, "carbon_monoxide",    i, 500.0),
+            "nitrogen_dioxide":   _sv(ah, "nitrogen_dioxide",   i, 30.0),
+            "sulphur_dioxide":    _sv(ah, "sulphur_dioxide",    i, 10.0),
+            "ozone":              _sv(ah, "ozone",              i, 50.0),
+            "ammonia":            _sv(ah, "ammonia",            i, 10.0),
+            "dust":               _sv(ah, "dust",               i, 10.0),
+            "aerosol_optical_depth": _sv(ah, "aerosol_optical_depth", i, 0.3),
+            "relative_humidity_2m":  _sv(wh, "relative_humidity_2m",  i, 60.0),
+            "dew_point_2m":       _sv(wh, "dew_point_2m",       i, 15.0),
+            "wind_speed_10m":     _sv(wh, "wind_speed_10m",     i, 15.0),
+            "wind_gusts_10m":     _sv(wh, "wind_gusts_10m",     i, 20.0),
+            "wind_direction_10m": _sv(wh, "wind_direction_10m", i, 180.0),
+            "pressure_msl":       _sv(wh, "pressure_msl",       i, 1013.0),
+            "surface_pressure":   _sv(wh, "surface_pressure",   i, 1013.0),
+            "cloud_cover":        _sv(wh, "cloud_cover",        i, 30.0),
+            "is_day":             _sv(wh, "is_day",             i, 1.0),
+            "latitude":  city_info["lat"],
+            "longitude": city_info["lon"],
+        })
+
+    df = pd.DataFrame(rows)
+
+    # CPCB rolling averages — current-hour-inclusive, matching training logic
+    df["pm2_5_avg24"]            = df["pm2_5"].rolling(24, min_periods=1).mean()
+    df["pm10_avg24"]             = df["pm10"].rolling(24, min_periods=1).mean()
+    df["nitrogen_dioxide_avg24"] = df["nitrogen_dioxide"].rolling(24, min_periods=1).mean()
+    df["sulphur_dioxide_avg24"]  = df["sulphur_dioxide"].rolling(24, min_periods=1).mean()
+    df["ammonia_avg24"]          = df["ammonia"].rolling(24, min_periods=1).mean()
+    df["carbon_monoxide_avg8"]   = df["carbon_monoxide"].rolling(8, min_periods=1).mean()
+    df["ozone_avg8"]             = df["ozone"].rolling(8, min_periods=1).mean()
+
+    # Datetime features matching training
+    df["year"]         = df["datetime"].dt.year
+    df["month"]        = df["datetime"].dt.month
+    df["day"]          = df["datetime"].dt.day
+    df["hour"]         = df["datetime"].dt.hour
+    df["day_of_week"]  = df["datetime"].dt.dayofweek
+    df["week_of_year"] = df["datetime"].dt.isocalendar().week.astype(int)
+    df["is_weekend"]   = (df["day_of_week"] >= 5).astype(int)
+    df["quarter"]      = df["datetime"].dt.quarter
+
+    # Categorical encodings from training encoders.json
+    df["city_encoded"]  = CITY_ENC.get(city, 0)
+    df["state_encoded"] = STATE_ENC.get(city_info["state"], 0)
 
     return df
 
+
+def _predict(df: pd.DataFrame) -> np.ndarray:
+    X = df[REQUIRED_FEATURES].values.astype(np.float32)
+    X = np.nan_to_num(X, nan=0.0)
+    dmat = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
+    return np.clip(model.predict(dmat), 0.0, 500.0)
+
 # =============================================================================
-# API MODELS & ENDPOINTS
+# FASTAPI APP
 # =============================================================================
 
 class HourlyForecast(BaseModel):
     datetime: str; hour: int; aqi: float; category: str; emoji: str; color: str
     pm2_5: float; pm10: float; ozone: float; nitrogen_dioxide: float
-    sulphur_dioxide: float; carbon_monoxide: float; relative_humidity_2m: float; wind_speed_10m: float
+    sulphur_dioxide: float; carbon_monoxide: float
+    relative_humidity_2m: float; wind_speed_10m: float
 
 class DailySummary(BaseModel):
-    date: str; avg_aqi: float; max_aqi: float; min_aqi: float; category: str; emoji: str; color: str
+    date: str; avg_aqi: float; max_aqi: float; min_aqi: float
+    category: str; emoji: str; color: str
 
 class PredictionResponse(BaseModel):
-    success: bool; city: str; state: str; coordinates: Dict; forecast_days: int
-    generated_at: str; hourly: List[HourlyForecast]; daily: List[DailySummary]; summary: Dict
-
-class ManualFeatures(BaseModel):
-    pm2_5: float; pm10: float; nitrogen_dioxide: float; sulphur_dioxide: float
-    ozone: float; carbon_monoxide: float; dust: float; aerosol_optical_depth: float
-    wind_speed_10m: float; wind_gusts_10m: float; wind_direction_10m: float
-    relative_humidity_2m: float; dew_point_2m: float; surface_pressure: float
-    pressure_msl: float; cloud_cover: float; cloud_cover_low: float
-    cloud_cover_mid: float; cloud_cover_high: float; is_day: int
-    latitude: float; longitude: float; city_encoded: int; state_encoded: int
-    year: int; month: int; day: int; hour: int; quarter: int
-    week_of_year: int; is_weekend: int
-
-class ManualResponse(BaseModel):
-    aqi: float; category: str; emoji: str; color: str; physics_floor_applied: bool
+    success: bool; city: str; state: str; coordinates: Dict
+    forecast_days: int; generated_at: str
+    hourly: List[HourlyForecast]; daily: List[DailySummary]; summary: Dict
 
 class CitySummary(BaseModel):
     city: str; state: str; current_aqi: float; category: str; emoji: str
 
-app = FastAPI(title="AQI Prediction API", version=API_VERSION)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="AQI Prediction API (CPCB)", version=API_VERSION)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+                   allow_methods=["*"], allow_headers=["*"])
+
 
 @app.get("/")
-def root(): return {"status": "ok", "api": "AQI Prediction API", "version": API_VERSION}
+def root():
+    return {"status": "ok", "api": "AQI Prediction API",
+            "version": API_VERSION, "standard": "Indian CPCB (0-500)"}
 
-@app.get("/cities")
-def get_cities(): 
-    return {"total": len(CITIES), "cities": [{"name": c, "state": i["state"], "lat": i["lat"], "lon": i["lon"]} for c, i in sorted(CITIES.items())], "states": STATES}
 
 @app.get("/health")
-def health_check():
-    if model is None: raise HTTPException(status_code=503, detail="Model not loaded")
-    return {"status": "healthy", "mode": "indian_standard_legacy"}
+def health():
+    if model is None:
+        raise HTTPException(503, "Model not loaded")
+    if not REQUIRED_FEATURES:
+        raise HTTPException(503, "features.txt not loaded")
+    return {"status": "healthy", "features": len(REQUIRED_FEATURES),
+            "cities": len(CITIES)}
+
+
+@app.get("/cities")
+def get_cities():
+    return {"total": len(CITIES), "states": STATES,
+            "cities": [{"name": c, "state": d["state"],
+                        "lat": d["lat"], "lon": d["lon"]}
+                       for c, d in sorted(CITIES.items())]}
+
 
 @app.get("/predict/{city}", response_model=PredictionResponse)
-def predict_city_aqi(city: str, days: int = 2):
-    if city not in CITIES: raise HTTPException(status_code=400, detail="City not found")
-    if model is None: raise HTTPException(status_code=503, detail="Model not loaded")
-    days = max(1, min(5, days)); city_info = CITIES[city]
-    
-    weather, air_quality = fetch_data(city_info['lat'], city_info['lon'], days)
-    if not weather or not air_quality: raise HTTPException(status_code=503, detail="Open-Meteo API failed/timeout")
-    
-    df = prepare_features(weather, air_quality, city)
-    if df is None or len(df) == 0: raise HTTPException(status_code=500, detail="Data processing failed")
+def predict_city(city: str, days: int = 2):
+    if city not in CITIES:
+        raise HTTPException(400, f"Unknown city. Available: {sorted(CITIES)}")
+    if model is None or not REQUIRED_FEATURES:
+        raise HTTPException(503, "Model or feature list not loaded")
 
-    X = df[REQUIRED_FEATURES].values.astype(np.float32); X = np.nan_to_num(X, nan=0.0)
-    dmatrix = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
-    raw_predictions = model.predict(dmatrix)
-    
-    final_aqi = []
-    for i, pred in enumerate(raw_predictions):
-        pm25_raw = float(df.iloc[i].get('raw_pm2_5', df.iloc[i]['pm2_5']))
-        pm10_raw = float(df.iloc[i].get('raw_pm10', df.iloc[i]['pm10']))
-        final_aqi.append(apply_physics_floor(float(pred), pm25_raw, pm10_raw))
-    df['aqi'] = final_aqi
-    
-    hourly_forecast = []
-    for _, row in df.iterrows():
-        cat = aqi_category(row['aqi'])
-        hourly_forecast.append({
-            "datetime": row['datetime'].isoformat(), "hour": int(row['hour']),
-            "aqi": round(row['aqi'], 1), "category": cat["cat"], "emoji": cat["emoji"], "color": cat["color"],
-            "pm2_5": round(row.get('raw_pm2_5', row['pm2_5']), 1), "pm10": round(row.get('raw_pm10', row['pm10']), 1),
-            "ozone": round(row['ozone'], 1), "nitrogen_dioxide": round(row.get('raw_nitrogen_dioxide', row['nitrogen_dioxide']), 1),
-            "sulphur_dioxide": round(row['sulphur_dioxide'], 1), "carbon_monoxide": round(row['carbon_monoxide'], 1),
-            "relative_humidity_2m": round(row['relative_humidity_2m'], 1), "wind_speed_10m": round(row['wind_speed_10m'], 1)
+    days = max(1, min(5, days))
+    info = CITIES[city]
+
+    weather, air_q = _fetch(info["lat"], info["lon"], forecast_days=days)
+    if not weather or not air_q:
+        raise HTTPException(503, "Open-Meteo API unavailable")
+
+    df = _build_df(weather, air_q, city)
+    if df is None or df.empty:
+        raise HTTPException(500, "Data processing failed")
+
+    # Keep only rows from current hour onward for the forecast display
+    now_floor = pd.Timestamp.utcnow().tz_localize(None) + pd.Timedelta(hours=5, minutes=30)
+    now_floor = now_floor.floor("h")
+    fdf = df[df["datetime"] >= now_floor].copy()
+    if fdf.empty:
+        fdf = df.tail(days * 24).copy()
+
+    preds = _predict(fdf)
+    fdf["aqi"] = preds
+
+    hourly: List[Dict] = []
+    for _, row in fdf.iterrows():
+        cat = cpcb_category(float(row["aqi"]))
+        hourly.append({
+            "datetime": row["datetime"].isoformat(), "hour": int(row["hour"]),
+            "aqi": round(float(row["aqi"]), 1),
+            "category": cat["cat"], "emoji": cat["emoji"], "color": cat["color"],
+            "pm2_5": round(float(row["pm2_5"]), 1),
+            "pm10": round(float(row["pm10"]), 1),
+            "ozone": round(float(row["ozone"]), 1),
+            "nitrogen_dioxide": round(float(row["nitrogen_dioxide"]), 1),
+            "sulphur_dioxide": round(float(row["sulphur_dioxide"]), 1),
+            "carbon_monoxide": round(float(row["carbon_monoxide"]), 1),
+            "relative_humidity_2m": round(float(row["relative_humidity_2m"]), 1),
+            "wind_speed_10m": round(float(row["wind_speed_10m"]), 1),
         })
-    df['date'] = df['datetime'].dt.date
-    daily_summary = []
-    for date, group in df.groupby('date'):
-        d_cat = aqi_category(group['aqi'].mean())
-        daily_summary.append({
-            "date": str(date), "avg_aqi": round(float(group['aqi'].mean()), 1),
-            "max_aqi": round(float(group['aqi'].max()), 1), "min_aqi": round(float(group['aqi'].min()), 1),
-            "category": d_cat["cat"], "emoji": d_cat["emoji"], "color": d_cat["color"]
+
+    fdf["date"] = fdf["datetime"].dt.date
+    daily: List[Dict] = []
+    for date, grp in fdf.groupby("date"):
+        dc = cpcb_category(float(grp["aqi"].mean()))
+        daily.append({
+            "date": str(date),
+            "avg_aqi": round(float(grp["aqi"].mean()), 1),
+            "max_aqi": round(float(grp["aqi"].max()), 1),
+            "min_aqi": round(float(grp["aqi"].min()), 1),
+            "category": dc["cat"], "emoji": dc["emoji"], "color": dc["color"],
         })
-    avg_aqi = float(np.mean(final_aqi)); o_cat = aqi_category(avg_aqi); del df, X, dmatrix, raw_predictions, final_aqi; gc.collect()
+
+    avg = float(np.mean(preds))
+    oc = cpcb_category(avg)
+    del df, fdf; gc.collect()
+
     return {
-        "success": True, "city": city, "state": city_info['state'],
-        "coordinates": {"lat": city_info['lat'], "lon": city_info['lon']},
+        "success": True, "city": city, "state": info["state"],
+        "coordinates": {"lat": info["lat"], "lon": info["lon"]},
         "forecast_days": days, "generated_at": datetime.now().isoformat(),
-        "hourly": hourly_forecast, "daily": daily_summary,
+        "hourly": hourly, "daily": daily,
         "summary": {
-            "avg_aqi": round(avg_aqi, 1), "max_aqi": round(max([h['aqi'] for h in hourly_forecast]), 1),
-            "min_aqi": round(min([h['aqi'] for h in hourly_forecast]), 1), "category": o_cat["cat"],
-            "emoji": o_cat["emoji"], "color": o_cat["color"], "total_hours": len(hourly_forecast)
-        }
+            "avg_aqi": round(avg, 1),
+            "max_aqi": round(max(h["aqi"] for h in hourly), 1),
+            "min_aqi": round(min(h["aqi"] for h in hourly), 1),
+            "category": oc["cat"], "emoji": oc["emoji"], "color": oc["color"],
+            "total_hours": len(hourly),
+        },
     }
 
-def process_single_city(city_name: str) -> Optional[Dict]:
+
+def _single_city(city_name: str) -> Optional[Dict]:
     try:
-        city_info = CITIES[city_name]
-        weather, air_quality = fetch_data(city_info['lat'], city_info['lon'], 1)
-        if weather and air_quality:
-            df = prepare_features(weather, air_quality, city_name)
-            if df is not None and len(df) > 0:
-                current_row = df.iloc[[0]].copy() 
-                pm25_raw = float(current_row.get('raw_pm2_5', current_row['pm2_5']).values[0])
-                pm10_raw = float(current_row.get('raw_pm10', current_row['pm10']).values[0])
-                X = current_row[REQUIRED_FEATURES].values.astype(np.float32); X = np.nan_to_num(X, nan=0.0)
-                dmatrix = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
-                pred = float(model.predict(dmatrix)[0])
-                final_aqi = apply_physics_floor(pred, pm25_raw, pm10_raw)
-                cat = aqi_category(final_aqi)
-                return {
-                    "city": city_name, "state": city_info['state'],
-                    "current_aqi": round(final_aqi, 1), "category": cat['cat'], "emoji": cat['emoji']
-                }
-    except Exception: return None
-    return None
+        info = CITIES[city_name]
+        weather, air_q = _fetch(info["lat"], info["lon"], forecast_days=1)
+        if not weather or not air_q:
+            return None
+        df = _build_df(weather, air_q, city_name)
+        if df is None or df.empty:
+            return None
+        now_floor = pd.Timestamp.utcnow().tz_localize(None) + pd.Timedelta(hours=5, minutes=30)
+        now_floor = now_floor.floor("h")
+        row_df = df[df["datetime"] >= now_floor]
+        if row_df.empty:
+            row_df = df.tail(1)
+        pred = float(_predict(row_df)[0])
+        cat = cpcb_category(pred)
+        return {"city": city_name, "state": info["state"],
+                "current_aqi": round(pred, 1),
+                "category": cat["cat"], "emoji": cat["emoji"]}
+    except Exception:
+        return None
+
 
 @app.get("/predict/all/cities", response_model=List[CitySummary])
 def predict_all_cities():
-    if model is None: raise HTTPException(status_code=503, detail="Model not loaded")
+    if model is None or not REQUIRED_FEATURES:
+        raise HTTPException(503, "Model or feature list not loaded")
     results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_city = {executor.submit(process_single_city, city): city for city in CITIES}
-        for future in concurrent.futures.as_completed(future_to_city):
-            try:
-                data = future.result()
-                if data: results.append(data)
-            except Exception: continue
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
+        for data in ex.map(_single_city, CITIES):
+            if data:
+                results.append(data)
     gc.collect()
-    return sorted(results, key=lambda x: x['current_aqi'], reverse=True)
+    return sorted(results, key=lambda x: x["current_aqi"], reverse=True)
 
-@app.post("/predict/manual", response_model=ManualResponse)
-def predict_manual(features: ManualFeatures):
-    if model is None: raise HTTPException(status_code=503, detail="Model not loaded")
-    try:
-        data = features.dict(); df = pd.DataFrame([data])
-        X = df[REQUIRED_FEATURES].values.astype(np.float32); X = np.nan_to_num(X, nan=0.0)
-        dmatrix = xgb.DMatrix(X, feature_names=REQUIRED_FEATURES)
-        raw_pred = float(model.predict(dmatrix)[0])
-        min_aqi = calculate_indian_aqi(features.pm2_5, features.pm10)
-        final_aqi = max(raw_pred, min_aqi)
-        cat = aqi_category(final_aqi)
-        return {
-            "aqi": round(final_aqi, 1), "category": cat["cat"], "emoji": cat["emoji"], "color": cat["color"],
-            "physics_floor_applied": final_aqi > raw_pred
-        }
-    except Exception as e: raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))

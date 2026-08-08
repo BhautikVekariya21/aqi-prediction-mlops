@@ -56,8 +56,10 @@ class ModelEvaluator:
         
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
-        logger.info("Model Evaluator initialized")
+
+        # Target column — read from params to stay in sync
+        self.target = config.get("model_evaluation.target",
+                                  config.get("model_training.target", "aqi_cpcb"))
     
     def run(self) -> str:
         """
@@ -198,7 +200,7 @@ class ModelEvaluator:
         test_df = pd.read_parquet(self.test_data_path)
         
         X_test = test_df[feature_names].values.astype(np.float32)
-        y_test = test_df['us_aqi'].values.astype(np.float32)
+        y_test = test_df[self.target].values.astype(np.float32)
         
         return X_test, y_test, test_df
     
@@ -235,8 +237,7 @@ class ModelEvaluator:
         # Calculate metrics per category
         category_metrics = {}
         
-        for category in ['Good', 'Moderate', 'Unhealthy for Sensitive Groups', 
-                         'Unhealthy', 'Very Unhealthy', 'Hazardous']:
+        for category in ['Good', 'Satisfactory', 'Moderate', 'Poor', 'Very Poor', 'Severe']:
             
             cat_data = analysis_df[analysis_df['actual_category'] == category]
             
@@ -282,7 +283,7 @@ class ModelEvaluator:
                 city_data = test_df_copy[test_df_copy['city'] == city]
                 
                 if len(city_data) > 0:
-                    city_y_test = city_data['us_aqi'].values
+                    city_y_test = city_data[self.target].values
                     city_y_pred = city_data['predicted_aqi'].values
                     
                     city_met = AQIMetrics.calculate_all_metrics(city_y_test, city_y_pred)

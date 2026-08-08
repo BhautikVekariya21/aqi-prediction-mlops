@@ -50,8 +50,9 @@ class DataSplitting:
         # Random state
         self.random_state = config.get("project.random_state", 42)
         
-        # Target
-        self.target = "us_aqi"
+        # Target — read from params so it stays in sync with model_training target
+        self.target = config.get("data_splitting.target",
+                                  config.get("model_training.target", "aqi_cpcb"))
         
         # Reference columns
         self.reference_cols = ['datetime', 'city', 'state']
@@ -360,7 +361,7 @@ class DataSplitting:
             "val_pct": float(len(val_df) / len(df_original) * 100),
             "test_pct": float(len(test_df) / len(df_original) * 100),
             "n_features": int(len(feature_cols)),
-            "split_method": "stratified_random",
+            "split_method": self.split_method,
             "test_size": float(self.test_size),
             "validation_size": float(self.validation_size),
             "random_state": int(self.random_state),

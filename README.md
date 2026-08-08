@@ -5,26 +5,25 @@ colorFrom: blue
 colorTo: green
 sdk: docker
 sdk_version: "latest"
-python_version: "3.10"
+python_version: "3.12"
 app_file: app.py
 pinned: false
 ---
 
-# 🌍 AQI Prediction MLOps (Ultra-Lite & Physics-Aware)
+# 🌍 AQI Prediction — Indian CPCB Standard
 
 <div align="center">
 
-[![Python 3.10](https://img.shields.io/badge/Python-3.10-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.104.0-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Deployed-FFD21E?style=for-the-badge)](https://huggingface.co/spaces/bhautikvekariya21/aqi-prediction-mlops)
+[![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![XGBoost](https://img.shields.io/badge/XGBoost-3.4-FF6600?style=for-the-badge)](https://xgboost.readthedocs.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
-**A production-grade, memory-optimized air quality forecasting engine for 29 Indian cities.**
+**Real-time AQI forecasting for 29 Indian cities on the official CPCB 0–500 scale.**
 
 <p align="center">
-  <a href="https://bhautikvekariya21-aqi-prediction-mlops.hf.space/docs"><img src="https://img.shields.io/badge/Live%20API-Demo-0A66C2?style=for-the-badge&logo=fastapi&logoColor=white" alt="Live API Demo"/></a>
-  <a href="https://aqi-predictor.lovable.app"><img src="https://img.shields.io/badge/Website-Open-2EA44F?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Live Website"/></a>
-  <a href="https://www.youtube.com/"><img src="https://img.shields.io/badge/YouTube-Watch%20Demo-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube"/></a>
+  <a href="https://bhautikvekariya21-aqi-prediction-mlops.hf.space/docs"><img src="https://img.shields.io/badge/Live%20API-Demo-0A66C2?style=for-the-badge&logo=fastapi&logoColor=white" alt="Live API"/></a>
+  <a href="https://aqi-predictor.lovable.app"><img src="https://img.shields.io/badge/Website-Open-2EA44F?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Website"/></a>
   <a href="https://hub.docker.com/r/bhautikvekariya21/aqi-prediction-api"><img src="https://img.shields.io/badge/Docker%20Hub-Container-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker Hub"/></a>
   <a href="../../issues"><img src="https://img.shields.io/badge/Report-Bug-D73A49?style=for-the-badge&logo=github&logoColor=white" alt="Report Bug"/></a>
 </p>
@@ -33,211 +32,237 @@ pinned: false
 
 ---
 
-## 📖 Overview
+## Overview
 
-The **AQI Prediction MLOps** project is a high-performance REST API capable of forecasting Air Quality Index (AQI) values in real-time. Unlike standard ML deployments, this system features a custom **"Ultra-Lite" architecture** that reduces memory overhead by 70%, allowing it to run efficiently on resource-constrained cloud tiers (like Hugging Face Spaces free tier).
+This project trains an XGBoost model to predict Indian AQI following the **official CPCB methodology** (NAAQS 2014) and serves predictions through a FastAPI REST API.
 
-It integrates **real-time meteorological data** from Open-Meteo with a trained **XGBoost** model, enhanced by a **hybrid physics layer** that corrects predictions during extreme weather events (e.g., smog, winter inversion).
-
----
-
-## ⚡ Key Innovations
-
-### 🧠 Hybrid Physics-ML Engine
-* **Physics Floor Protocol:** Pure ML models often under-predict extreme outliers. Our system enforces a physics-based floor: if `PM2.5 > 350` (Severe), the logic overrides the model to prevent dangerous false negatives.
-* **Dynamic Winter Calibration:** Automatically detects stagnation periods (Oct–Feb) and applies meteorological multipliers to account for thermal inversion, which standard regression models miss.
-
-### 🚀 Ultra-Lite Architecture
-* **Zero-Heavy-Dependency:** We stripped out heavy libraries like `scikit-learn` and `scipy`. The model runs on **native XGBoost** and standard Python libraries.
-* **Memory Optimization:** Reduced RAM usage from ~1.2GB to **<400MB**, eliminating OOM (Out of Memory) crashes on free-tier containers.
-* **Parallel Computing:** Implements `ThreadPoolExecutor` to fetch and predict data for all 29 cities simultaneously, reducing bulk response time from **30s to <3s**.
-
-### 🛡️ Robust Engineering
-* **Connection Pooling:** Uses a global `requests.Session` with an optimized HTTP adapter to reuse SSL connections.
-* **Smart Retries:** Implements exponential backoff strategies to handle external API rate limits gracefully.
+The core design insight is **train/serve parity**: the feature vector the model sees at inference time is built the exact same way it was built during training — from CPCB time-averaged concentrations, not raw instantaneous readings.
 
 ---
 
-## 🏗️ Architecture
+## How the AQI is computed (CPCB methodology)
 
-### Request-to-Prediction Flow
+| Pollutant | Averaging window | Unit |
+|---|---|---|
+| PM2.5, PM10, NO₂, SO₂, NH₃ | 24 hours | µg/m³ |
+| CO | 8 hours | mg/m³ (converted from µg/m³) |
+| O₃ | 8 hours | µg/m³ |
 
-1. **Client Request** → User or frontend calls `GET /predict/{city}` (or bulk endpoint).
-2. **FastAPI Gateway** → Validates inputs and routes request to inference services.
-3. **Weather Fetch Layer** → Pulls real-time meteorological features from Open-Meteo.
-4. **Preprocessing Layer** → Aligns incoming weather data to the model feature schema.
-5. **XGBoost Inference** → Generates baseline AQI prediction using the optimized model artifact.
-6. **Physics Calibration Layer** → Applies safety floor + seasonal calibration during extreme conditions.
-7. **Response Builder** → Returns final AQI, category, and forecast payload as JSON.
+Each pollutant's averaged concentration is mapped to a sub-index via piecewise-linear interpolation over the CPCB breakpoint table. The overall AQI = `max(sub-indices)`, valid only when ≥3 sub-indices are present and at least one PM sub-index is available.
 
-### Runtime Components
-
-- **API Layer:** FastAPI app serving prediction endpoints.
-- **Inference Layer:** Lightweight predictor + model loader for low-memory environments.
-- **External Dependency:** Open-Meteo API for live weather inputs.
-- **Concurrency:** ThreadPoolExecutor for multi-city parallel prediction.
-- **Reliability Controls:** Shared HTTP session, retries, and backoff handling.
-
-### Input and Output Contract (High-Level)
-
-- **Input Sources:**
-  - Path parameter: `city` (e.g., `Delhi`, `Mumbai`).
-  - Query parameter: `days` forecast horizon (default: `2`).
-  - Manual endpoint payload: complete model feature vector for simulation use-cases.
-- **Output Fields:**
-  - Current AQI value and category.
-  - Time-series/hourly forecast for requested horizon.
-  - Metadata required by dashboard clients for rendering status cards.
-
-### Resilience and Fallback Strategy
-
-- **External API instability:** Retries with exponential backoff reduce transient failures.
-- **Connection overhead:** Shared HTTP session keeps latency low via connection reuse.
-- **Extreme pollution edge-cases:** Physics floor prevents unsafe underestimation.
-- **Multi-city burst traffic:** Parallel workers keep bulk endpoint response time stable.
-
-### Deployment Notes
-
-- Designed for low-memory cloud runtimes (free/shared tiers).
-- Model artifact is compressed and loaded through a lightweight path.
-- API service is container-ready and published for direct Docker deployment.
+Categories: **Good** (0–50) · **Satisfactory** (51–100) · **Moderate** (101–200) · **Poor** (201–300) · **Very Poor** (301–400) · **Severe** (401–500)
 
 ---
 
-## 📡 API Reference
+## Model performance
+
+Evaluated on a held-out temporal test set (last 15% of data by date — no shuffling):
+
+| Metric | Value |
+|---|---|
+| R² | **0.9738** |
+| RMSE | **9.54 AQI points** |
+| MAE | **2.51 AQI points** |
+| Within ±10 AQI | 96.7% |
+| Within ±25 AQI | 98.9% |
+
+Per-category breakdown (test set):
+
+| Category | Count | RMSE | R² |
+|---|---|---|---|
+| Good | 26,963 | 1.6 | 0.958 |
+| Satisfactory | 64,801 | 2.2 | 0.976 |
+| Moderate | 29,147 | 6.6 | 0.942 |
+| Poor | 4,691 | 23.3 | 0.326 |
+| Very Poor | 1,640 | 30.4 | — |
+| Severe | 439 | 116 | — |
+
+Very Poor and Severe are rare in the dataset (~1.6% combined); the model handles Good–Moderate well, which covers 95% of typical city-hours.
+
+---
+
+## Architecture
+
+### Training pipeline (DVC, 8 stages)
+
+```
+Stage 1  data_ingestion        Raw parquet from Open-Meteo (851k rows, 29 cities)
+Stage 2  data_preprocessing    Schema fix, winsorize, imputation
+Stage 3  feature_engineering   CPCB rolling avgs + label, datetime features, encoders.json
+Stage 4  feature_selection     45 features via correlation + decision tree + XGBoost importance
+Stage 5  data_splitting        Temporal split (train 70% / val 15% / test 15%)
+Stage 6  model_training        XGBoost (n_estimators=1200, early stopping on val)
+Stage 7  model_optimization    Optuna (20 trials) → compressed model.json.gz (0.26 MB)
+Stage 8  model_evaluation      Acceptance thresholds: R²≥0.90, RMSE≤15, MAE≤10
+```
+
+### Serving pipeline (app.py)
+
+```
+Request → fetch 48h Open-Meteo history (past_days=2)
+        → compute 7 CPCB rolling averages per the same logic used in training
+        → build 45-feature vector from features.txt
+        → XGBoost inference → clip [0, 500]
+        → CPCB category → JSON response
+```
+
+No post-hoc corrections, seasonal multipliers, or physics floors. The model output is the prediction.
+
+### Deployable artifacts (repo root)
+
+| File | Size | Purpose |
+|---|---|---|
+| `model.json.gz` | 0.26 MB | XGBoost model, gzip-compressed |
+| `features.txt` | 1 KB | 45 feature names in training order |
+| `encoders.json` | 1 KB | city/state label-encoding maps |
+
+---
+
+## API reference
 
 **Base URL:** `https://bhautikvekariya21-aqi-prediction-mlops.hf.space`
 
-### 1. 🏙️ Real-Time Prediction
+### GET /predict/{city}
 
-Get the current AQI and hourly forecast for a specific city.
+Real-time AQI and hourly forecast for one city.
 
-- **Endpoint:** `GET /predict/{city}`
-- **Parameters:** `days` (optional, default=2)
-- **Example:**
-  ```bash
-  curl -X 'GET' \
-    'https://bhautikvekariya21-aqi-prediction-mlops.hf.space/predict/Delhi?days=2' \
-    -H 'accept: application/json'
-  ```
+```bash
+curl "https://bhautikvekariya21-aqi-prediction-mlops.hf.space/predict/Delhi?days=2"
+```
 
-### 2. 📊 National Dashboard (Bulk)
+Parameters: `days` (1–5, default 2).
 
-Get the current status of all 29 supported cities in a single request.
+Response includes: `hourly[]` (AQI, category, pollutant readings per hour), `daily[]` (daily summary), `summary` (avg/max/min AQI).
 
-- **Endpoint:** `GET /predict/all/cities`
-- **Performance:** Returns data for 29 cities in <3 seconds using threading.
+### GET /predict/all/cities
 
-### 3. 🧪 Simulation Mode (Manual)
+Current AQI for all 29 cities in one request. Uses `ThreadPoolExecutor(max_workers=10)` internally.
 
-Test "what-if" scenarios by sending raw environmental features manually.
+### GET /cities
 
-- **Endpoint:** `POST /predict/manual`
-- **Payload:** JSON object with 31 features (PM2.5, Wind Speed, etc.).
+List all supported cities with coordinates and state.
+
+### GET /health
+
+Returns `{"status": "healthy", "features": 45, "cities": 29}` when artifacts are loaded.
 
 ---
 
-## 🚀 Getting Started
+## Supported cities (29)
 
-### Option A: Run with Docker (Recommended)
+| City | State | City | State | City | State |
+|---|---|---|---|---|---|
+| Agartala | Tripura | Hyderabad | Telangana | Raipur | Chhattisgarh |
+| Ahmedabad | Gujarat | Imphal | Manipur | Ranchi | Jharkhand |
+| Aizawl | Mizoram | Itanagar | Arunachal Pradesh | Shillong | Meghalaya |
+| Bengaluru | Karnataka | Jaipur | Rajasthan | Shimla | Himachal Pradesh |
+| Bhopal | Madhya Pradesh | Kohima | Nagaland | Thiruvananthapuram | Kerala |
+| Bhubaneswar | Odisha | Kolkata | West Bengal | Visakhapatnam | Andhra Pradesh |
+| Chandigarh | Punjab | Lucknow | Uttar Pradesh | Dehradun | Uttarakhand |
+| Chennai | Tamil Nadu | Mumbai | Maharashtra | Gangtok | Sikkim |
+| Delhi | Delhi | Panaji | Goa | Gurugram | Haryana |
+| Guwahati | Assam | Patna | Bihar | | |
 
-You don't need to install Python or libraries. Just run the container.
+---
+
+## Getting started
+
+### Option A — Docker
 
 ```bash
-# Pull the pre-built image
 docker pull bhautikvekariya21/aqi-prediction-api:latest
-
-# Run on port 8000
 docker run -p 8000:7860 bhautikvekariya21/aqi-prediction-api:latest
+# Open http://localhost:8000/docs
 ```
 
-*Visit `http://localhost:8000/docs` to test.*
-
-### Option B: Run from Source
-
-1. **Clone the repository**
-
-   ```bash
-   git clone https://github.com/BhautikVekariya21/aqi-prediction-mlops.git
-   cd aqi-prediction-mlops
-   ```
-
-2. **Install Dependencies**
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Start the Server**
-
-   ```bash
-   uvicorn app:app --reload
-   ```
-
----
-
-## 🔄 CI/CD Pipeline
-
-This project uses a sophisticated **Dual-Target CI/CD Pipeline** powered by GitHub Actions.
-
-| Stage | Description | Target |
-| :--- | :--- | :--- |
-| **Verification** | Checks critical files (`app.py`, `Dockerfile`) and model integrity. | GitHub Actions Runner |
-| **Deployment A** | Uses `huggingface_hub` Python SDK to bypass Git LFS limits and deploy the API. | **Hugging Face Spaces** |
-| **Deployment B** | Builds a multi-platform Docker image and pushes it to the registry. | **Docker Hub** |
-
-**Workflow File:** `.github/workflows/ci.yml`
-
----
-
-## 📂 Project Structure
+### Option B — Run from source
 
 ```bash
+git clone https://github.com/BhautikVekariya21/aqi-prediction-mlops.git
+cd aqi-prediction-mlops
+python -m venv .venv && .venv\Scripts\activate   # Windows
+pip install -r requirements-api.txt
+uvicorn app:app --reload
+```
+
+### Option C — Retrain the model
+
+```bash
+pip install -r requirements.txt
+# Stage 1 (data ingestion) only needs to run once.
+# Run stages 2–8:
+python -m src.pipeline.stage_02_data_preprocessing
+python -m src.pipeline.stage_03_feature_engineering
+python -m src.pipeline.stage_04_feature_selection
+python -m src.pipeline.stage_05_data_splitting
+python -m src.pipeline.stage_06_model_training
+python -m src.pipeline.stage_07_model_optimization
+python -m src.pipeline.stage_08_model_evaluation
+# Copy artifacts to root:
+copy models\optimized\model.json.gz .\model.json.gz
+copy models\optimized\features.txt .\features.txt
+copy data\features\encoders.json .\encoders.json
+```
+
+Or use DVC: `dvc repro` (skips stages whose inputs haven't changed).
+
+---
+
+## Project structure
+
+```
 aqi-prediction-mlops/
-├── .github/workflows/      # CI/CD pipelines
-│   └── ci.yml              # Main deployment workflow
-├── models/
-│   └── optimized/          # Feature definitions
-├── app.py                  # Main Application (FastAPI + Logic)
-├── Dockerfile              # Production Docker configuration
-├── model.json.gz           # Compressed XGBoost Model (~72MB)
-├── requirements.txt        # Lite dependencies
-└── README.md               # Documentation
+├── src/
+│   ├── components/          # Pipeline stage logic
+│   │   ├── data_preprocessing.py
+│   │   ├── feature_engineering.py   # CPCB label + rolling avgs
+│   │   ├── feature_selection.py
+│   │   ├── data_splitting.py
+│   │   ├── model_trainer.py
+│   │   ├── model_optimizer.py
+│   │   └── model_evaluator.py
+│   ├── pipeline/            # Stage entry points (stage_0N_*.py)
+│   └── utils/
+│       ├── aqi.py           # CPCB math — single source of truth for train & serve
+│       ├── metrics.py       # CPCB category thresholds
+│       └── ...
+├── data/                    # DVC-tracked (not in Git)
+├── models/                  # DVC-tracked intermediates; optimized/ kept in Git
+├── configs/
+│   └── cities.yaml
+├── app.py                   # FastAPI serving (v6.0.0)
+├── dvc.yaml                 # 8-stage pipeline definition
+├── params.yaml              # All hyperparameters and paths
+├── model.json.gz            # Deployable model artifact (0.26 MB)
+├── features.txt             # 45 selected features in training order
+├── encoders.json            # City/state label-encoding maps
+├── Dockerfile
+├── requirements.txt         # Training dependencies
+└── requirements-api.txt     # Production API dependencies (minimal)
 ```
 
 ---
 
-## 📊 Supported Cities
+## CI/CD
 
-The model is calibrated for 29 major Indian cities (including all state capitals and union territories):
+GitHub Actions workflow (`.github/workflows/ci.yml`):
 
-| City | State/UT | City | State/UT | City | State/UT |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| Agartala | Tripura | Dehradun | Uttarakhand | Kohima | Nagaland |
-| Ahmedabad | Gujarat | Delhi | Delhi | Kolkata | West Bengal |
-| Aizawl | Mizoram | Gangtok | Sikkim | Lucknow | Uttar Pradesh |
-| Bengaluru | Karnataka | Gurugram | Haryana | Mumbai | Maharashtra |
-| Bhopal | Madhya Pradesh | Guwahati | Assam | Panaji | Goa |
-| Bhubaneswar | Odisha | Hyderabad | Telangana | Patna | Bihar |
-| Chandigarh | Punjab | Imphal | Manipur | Raipur | Chhattisgarh |
-| Chennai | Tamil Nadu | Itanagar | Arunachal Pradesh | Ranchi | Jharkhand |
-| | | Jaipur | Rajasthan | Shillong | Meghalaya |
-| | | | | Shimla | Himachal Pradesh |
-| | | | | Thiruvananthapuram | Kerala |
-| | | | | Visakhapatnam | Andhra Pradesh |
+| Step | What it does |
+|---|---|
+| Verify | Checks `app.py`, `Dockerfile`, model artifact presence |
+| Deploy → Hugging Face Spaces | Pushes via `huggingface_hub` SDK |
+| Deploy → Docker Hub | Builds multi-platform image and pushes |
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
-Contributions are welcome! Please follow these steps:
+1. Fork the repo
+2. Create a branch: `git checkout -b feature/my-feature`
+3. Commit: `git commit -m 'Add my feature'`
+4. Push: `git push origin feature/my-feature`
+5. Open a Pull Request
 
-1. Fork the project.
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`).
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`).
-4. Push to the branch (`git push origin feature/AmazingFeature`).
-5. Open a Pull Request.
+## License
 
-## 📝 License
-
-Distributed under the **MIT License**. See `LICENSE` for more information.
+MIT — see `LICENSE`.

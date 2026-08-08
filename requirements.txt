@@ -1,6 +1,13 @@
 fastapi
 uvicorn
-pandas
-numpy
-xgboost
+pandas>=2.0.0
+numpy>=1.26.0
+xgboost>=2.0.0
 requests
+pyarrow>=14.0.0
+pyyaml
+scikit-learn
+optuna
+mlflow
+psutil
+dvc

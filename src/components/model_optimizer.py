@@ -69,7 +69,11 @@ class ModelOptimizer:
         self.xgboost_training = opt_config.get("xgboost_training", {})
         
         self.max_performance_degradation = opt_config.get("max_performance_degradation", 0.02)
-        
+
+        # Target column — must match model_training target
+        self.target = config.get("model_optimization.target",
+                                  config.get("model_training.target", "aqi_cpcb"))
+
         # Random state
         self.random_state = config.get("project.random_state", 42)
         
@@ -160,13 +164,13 @@ class ModelOptimizer:
             feature_names = [line.strip() for line in f.readlines()]
         
         X_train = train_df[feature_names].values.astype(np.float32)
-        y_train = train_df['us_aqi'].values.astype(np.float32)
-        
+        y_train = train_df[self.target].values.astype(np.float32)
+
         X_val = val_df[feature_names].values.astype(np.float32)
-        y_val = val_df['us_aqi'].values.astype(np.float32)
-        
+        y_val = val_df[self.target].values.astype(np.float32)
+
         X_test = test_df[feature_names].values.astype(np.float32)
-        y_test = test_df['us_aqi'].values.astype(np.float32)
+        y_test = test_df[self.target].values.astype(np.float32)
         
         logger.info(f"   Train: {X_train.shape}")
         logger.info(f"   Val:   {X_val.shape}")

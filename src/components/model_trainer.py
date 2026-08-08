@@ -17,7 +17,7 @@ import gc
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor
 import xgboost as xgb
-from catboost import CatBoostRegressor
+# CatBoost is imported lazily below — only when "catboost" is in models list
 
 from ..utils.logger import get_logger
 from ..utils.config_reader import ConfigReader
@@ -47,7 +47,7 @@ class ModelTrainer:
         
         self.splits_dir = Path(train_config.get("splits_dir", "data/splits"))
         self.output_dir = Path(train_config.get("output_dir", "models"))
-        self.target = train_config.get("target", "us_aqi")
+        self.target = train_config.get("target", "aqi_cpcb")
         
         # Models to train (from notebook, NO gradient_boosting)
         self.models_to_train = train_config.get("models", [
@@ -257,21 +257,24 @@ class ModelTrainer:
             elif model_name == "xgboost":
                 params = self.model_params.get("xgboost", {})
                 models["xgboost"] = xgb.XGBRegressor(
-                    n_estimators=params.get("n_estimators", 500),
+                    n_estimators=params.get("n_estimators", 1200),
                     max_depth=params.get("max_depth", 8),
                     learning_rate=params.get("learning_rate", 0.05),
                     subsample=params.get("subsample", 0.8),
                     colsample_bytree=params.get("colsample_bytree", 0.8),
+                    min_child_weight=params.get("min_child_weight", 5),
                     reg_alpha=params.get("reg_alpha", 0.1),
-                    reg_lambda=params.get("reg_lambda", 0.1),
+                    reg_lambda=params.get("reg_lambda", 1.0),
                     tree_method=params.get("tree_method", "hist"),
+                    early_stopping_rounds=self.early_stopping_rounds,  # must be on constructor
                     n_jobs=self.n_jobs,
                     random_state=self.random_state,
                     verbosity=0
                 )
-                logger.info(f"   OK XGBoost initialized")
-            
+                logger.info(f"   OK XGBoost initialized (early_stopping_rounds={self.early_stopping_rounds})")
+
             elif model_name == "catboost":
+                from catboost import CatBoostRegressor  # lazy import — only when requested
                 params = self.model_params.get("catboost", {})
                 models["catboost"] = CatBoostRegressor(
                     iterations=params.get("iterations", 500),
@@ -303,6 +306,7 @@ class ModelTrainer:
         # Models with early stopping (from notebook)
         if model_name in ["xgboost", "catboost"]:
             if model_name == "xgboost":
+                # early_stopping_rounds is set on the constructor; eval_set triggers it
                 model.fit(
                     X_train, y_train,
                     eval_set=[(X_val, y_val)],

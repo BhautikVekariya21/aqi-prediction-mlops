@@ -12,6 +12,7 @@ import json
 
 from ..utils.logger import get_logger
 from ..utils.config_reader import ConfigReader
+from ..utils.aqi import cpcb_aqi_array_from_ugm3
 
 
 logger = get_logger(__name__)
@@ -42,6 +43,22 @@ class FeatureEngineering:
         self.categorical_columns = fe_config.get("categorical_columns", ["city", "state"])
         self.encoding_method = fe_config.get("encoding_method", "label")
         self.create_cyclical_features = fe_config.get("create_cyclical_features", False)
+
+        # Temporal features (lag / rolling) -- key drivers of AQI autocorrelation.
+        # These are computed per-city in time order, so they are leakage-safe
+        # under a temporal train/val/test split.
+        self.create_lag_features = fe_config.get("create_lag_features", False)
+        self.create_rolling_features = fe_config.get("create_rolling_features", False)
+        self.create_interaction_features = fe_config.get("create_interaction_features", False)
+
+        # Exogenous drivers to lag/roll (raw Open-Meteo names, matching schema).
+        self.temporal_driver_columns = fe_config.get("temporal_driver_columns", [
+            "pm2_5", "pm10", "carbon_monoxide", "nitrogen_dioxide",
+            "sulphur_dioxide", "ozone", "dust", "aerosol_optical_depth",
+            "wind_speed_10m", "relative_humidity_2m",
+        ])
+        self.lag_hours = fe_config.get("lag_hours", [1, 3, 24])
+        self.rolling_windows = fe_config.get("rolling_windows", [6, 24])
         
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -65,15 +82,24 @@ class FeatureEngineering:
         logger.info(f"   Loaded: {df.shape[0]:,} rows × {df.shape[1]} columns")
         
         initial_columns = df.shape[1]
-        
+
+        # Step 0: Compute CPCB AQI label + 7 CPCB rolling-average features.
+        # Must run first so the avg columns exist before any downstream step.
+        logger.info(f"\n2. Computing CPCB AQI label and rolling-average features")
+        df = self._compute_cpcb_label_and_avg_features(df)
+
         # Step 1: Datetime features (from notebook)
-        logger.info(f"\n2. Creating datetime features")
+        logger.info(f"\n3. Creating datetime features")
         df = self._create_datetime_features(df)
         
         # Step 2: Derived weather features (from notebook)
-        logger.info(f"\n3. Creating derived features")
+        logger.info(f"\n4. Creating derived features")
         df = self._create_derived_features(df)
-        
+
+        # Step 2b: Temporal features (lag / rolling) -- the accuracy lever.
+        logger.info(f"\n3b. Creating temporal (lag/rolling) features")
+        df = self._create_temporal_features(df)
+
         # Step 3: Categorical encoding (from notebook: label encoding)
         logger.info(f"\n4. Encoding categorical features")
         df = self._encode_categorical(df)
@@ -101,6 +127,81 @@ class FeatureEngineering:
         
         return str(output_file)
     
+    def _compute_cpcb_label_and_avg_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Compute the CPCB AQI label and the 7 CPCB rolling-average features.
+
+        Per-city, sort by datetime, then compute current-hour-inclusive trailing
+        means (rolling with min_periods=1 so early rows get partial means):
+          - 24 h: pm2_5, pm10, nitrogen_dioxide, sulphur_dioxide, ammonia
+          -  8 h: carbon_monoxide (µg/m³, converted to mg/m³ inside
+                  cpcb_aqi_array_from_ugm3), ozone
+
+        The 7 avg columns are also kept as model features so the serving code
+        can reconstruct the identical vector from a 48 h history window.
+
+        Rows where aqi_cpcb is NaN (< 3 sub-indices valid, or no PM sub-index)
+        are dropped — they carry no ground-truth label.
+        """
+        required = {"datetime", "city", "pm2_5", "pm10", "carbon_monoxide",
+                    "nitrogen_dioxide", "sulphur_dioxide", "ozone"}
+        missing = required - set(df.columns)
+        if missing:
+            raise ValueError(f"_compute_cpcb_label_and_avg_features: missing columns {missing}")
+
+        df = df.sort_values(["city", "datetime"]).reset_index(drop=True)
+
+        # --- rolling averages per city ---
+        avg_specs = {
+            "pm2_5_avg24":           ("pm2_5",            24),
+            "pm10_avg24":            ("pm10",             24),
+            "nitrogen_dioxide_avg24":("nitrogen_dioxide", 24),
+            "sulphur_dioxide_avg24": ("sulphur_dioxide",  24),
+            "ammonia_avg24":         ("ammonia",          24),
+            "carbon_monoxide_avg8":  ("carbon_monoxide",   8),
+            "ozone_avg8":            ("ozone",             8),
+        }
+
+        new_avg: Dict[str, pd.Series] = {}
+        grp = df.groupby("city", sort=False)
+        for feat_name, (src_col, window) in avg_specs.items():
+            if src_col in df.columns:
+                new_avg[feat_name] = (
+                    grp[src_col]
+                    .transform(lambda s, w=window: s.rolling(w, min_periods=1).mean())
+                    .astype("float32")
+                )
+            else:
+                logger.warning(f"   Column '{src_col}' not found — {feat_name} set to NaN")
+                new_avg[feat_name] = pd.Series(np.nan, index=df.index, dtype="float32")
+
+        df = pd.concat([df, pd.DataFrame(new_avg, index=df.index)], axis=1)
+
+        # --- CPCB AQI label from the 7 averages (dict API, CO µg/m³ → mg/m³ done inside) ---
+        df["aqi_cpcb"] = cpcb_aqi_array_from_ugm3({
+            "pm2_5":            df["pm2_5_avg24"].to_numpy(dtype=float),
+            "pm10":             df["pm10_avg24"].to_numpy(dtype=float),
+            "nitrogen_dioxide": df["nitrogen_dioxide_avg24"].to_numpy(dtype=float),
+            "sulphur_dioxide":  df["sulphur_dioxide_avg24"].to_numpy(dtype=float),
+            "ammonia":          df["ammonia_avg24"].to_numpy(dtype=float),
+            "carbon_monoxide":  df["carbon_monoxide_avg8"].to_numpy(dtype=float),
+            "ozone":            df["ozone_avg8"].to_numpy(dtype=float),
+        }).astype("float32")
+
+        before = len(df)
+        df = df.dropna(subset=["aqi_cpcb"]).reset_index(drop=True)
+        dropped = before - len(df)
+        if dropped:
+            logger.info(f"   Dropped {dropped:,} rows where aqi_cpcb is NaN "
+                        f"(< 3 sub-indices or no PM sub-index)")
+
+        logger.info(
+            f"   OK aqi_cpcb computed — range [{df['aqi_cpcb'].min():.0f}, "
+            f"{df['aqi_cpcb'].max():.0f}], mean {df['aqi_cpcb'].mean():.1f}"
+        )
+        logger.info(f"   OK 7 CPCB avg features added: {list(new_avg.keys())}")
+        return df
+
     def _create_datetime_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Create datetime-based features (from notebook)
@@ -167,8 +268,9 @@ class FeatureEngineering:
         """
         Create derived features (from notebook)
         """
-        # Humidity category (from notebook)
-        if 'humidity_percent' in df.columns:
+        # Humidity category — real column name is relative_humidity_2m
+        humidity_col = next((c for c in ("relative_humidity_2m", "humidity_percent") if c in df.columns), None)
+        if humidity_col:
             def get_humidity_category(h):
                 if pd.isna(h):
                     return None
@@ -180,54 +282,45 @@ class FeatureEngineering:
                     return "Humid"
                 else:
                     return "Very_Humid"
-            
-            df['humidity_category'] = df['humidity_percent'].apply(get_humidity_category)
-        
-        # Wind category (from notebook)
-        if 'wind_gusts_kmh' in df.columns:
+            df['humidity_category'] = df[humidity_col].apply(get_humidity_category)
+
+        # Wind category — real column name is wind_gusts_10m (m/s); convert to km/h for thresholds
+        wind_col = next((c for c in ("wind_gusts_10m", "wind_gusts_kmh") if c in df.columns), None)
+        if wind_col:
+            # wind_gusts_10m is in m/s; multiply by 3.6 to get km/h for the same thresholds
+            scale = 3.6 if wind_col == "wind_gusts_10m" else 1.0
             def get_wind_category(w):
                 if pd.isna(w):
                     return None
-                if w < 5:
+                v = w * scale
+                if v < 5:
                     return "Calm"
-                elif w < 15:
+                elif v < 15:
                     return "Light"
-                elif w < 30:
+                elif v < 30:
                     return "Moderate"
-                elif w < 50:
+                elif v < 50:
                     return "Strong"
                 else:
                     return "Very_Strong"
-            
-            df['wind_category'] = df['wind_gusts_kmh'].apply(get_wind_category)
-        
-        # Precipitation features (from notebook)
-        if 'precipitation_mm' in df.columns:
-            df['is_raining'] = (df['precipitation_mm'] > 0).astype(int)
-            df['heavy_rain'] = (df['precipitation_mm'] > 7.5).astype(int)
-        
-        # AQI category (from notebook)
-        if 'us_aqi' in df.columns:
-            def get_aqi_category(aqi):
-                if pd.isna(aqi):
-                    return None
-                if aqi <= 50:
-                    return "Good"
-                elif aqi <= 100:
-                    return "Moderate"
-                elif aqi <= 150:
-                    return "Unhealthy for Sensitive Groups"
-                elif aqi <= 200:
-                    return "Unhealthy"
-                elif aqi <= 300:
-                    return "Very Unhealthy"
-                else:
-                    return "Hazardous"
-            
-            df['aqi_category'] = df['us_aqi'].apply(get_aqi_category)
-        
-        # PM2.5 category India (from notebook)
-        if 'pm2_5_ugm3' in df.columns:
+            df['wind_category'] = df[wind_col].apply(get_wind_category)
+
+        # Precipitation features — real column name is precipitation (mm)
+        precip_col = next((c for c in ("precipitation", "precipitation_mm") if c in df.columns), None)
+        if precip_col:
+            df['is_raining'] = (df[precip_col] > 0).astype(int)
+            df['heavy_rain'] = (df[precip_col] > 7.5).astype(int)
+
+        # CPCB AQI category (replaces old US-EPA aqi_category)
+        if 'aqi_cpcb' in df.columns:
+            from ..utils.aqi import cpcb_category
+            df['aqi_category'] = df['aqi_cpcb'].apply(
+                lambda v: cpcb_category(v) if not pd.isna(v) else None
+            )
+
+        # PM2.5 India category — real column name is pm2_5
+        pm25_col = next((c for c in ("pm2_5", "pm2_5_ugm3") if c in df.columns), None)
+        if pm25_col:
             def get_pm25_category_india(pm25):
                 if pd.isna(pm25):
                     return None
@@ -243,15 +336,14 @@ class FeatureEngineering:
                     return "Very_Poor"
                 else:
                     return "Severe"
-            
-            df['pm25_category_india'] = df['pm2_5_ugm3'].apply(get_pm25_category_india)
-        
+            df['pm25_category_india'] = df[pm25_col].apply(get_pm25_category_india)
+
         # Festival period (Diwali: Oct 15 - Nov 15, from notebook)
         df['festival_period'] = (
             ((df['month'] == 10) & (df['day'] >= 15)) |
             ((df['month'] == 11) & (df['day'] <= 15))
         ).astype(int)
-        
+
         # Crop burning season (Oct-Nov for North India, from notebook)
         north_states = ["Delhi", "Punjab", "Haryana", "Uttar Pradesh", "Bihar"]
         if 'state' in df.columns:
@@ -261,22 +353,108 @@ class FeatureEngineering:
             ).astype(int)
         else:
             df['crop_burning_season'] = 0
-        
+
         logger.info(f"   OK Created derived features")
-        
+
         return df
-    
+
+    def _create_temporal_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Create lag and rolling-window features for exogenous drivers.
+
+        Computed per city in chronological order so no future information leaks
+        into any row (safe under a temporal split). Only exogenous drivers
+        (pollutants + weather) are lagged -- never the target -- so the features
+        are reconstructable at serving time from the forecast API.
+
+        NaNs introduced at the start of each city's series are filled per city
+        (ffill -> bfill -> median) so tree models that don't accept NaN still run.
+        """
+        if not (self.create_lag_features or self.create_rolling_features):
+            logger.info("   Skipped (lag/rolling disabled in params)")
+            return df
+
+        if 'datetime' not in df.columns or 'city' not in df.columns:
+            logger.warning("   Skipped: 'datetime'/'city' required for temporal features")
+            return df
+
+        # Restrict to drivers actually present in the data
+        drivers = [c for c in self.temporal_driver_columns if c in df.columns]
+        if not drivers:
+            logger.warning("   Skipped: none of the configured driver columns are present")
+            return df
+
+        # Ensure chronological order within each city
+        df = df.sort_values(['city', 'datetime']).reset_index(drop=True)
+        grouped = df.groupby('city', sort=False)
+
+        new_cols = {}
+
+        # Lag features
+        if self.create_lag_features:
+            for col in drivers:
+                for lag in self.lag_hours:
+                    new_cols[f'{col}_lag_{lag}h'] = grouped[col].shift(lag)
+            logger.info(f"   OK Lags {self.lag_hours}h for {len(drivers)} drivers "
+                        f"(+{len(drivers) * len(self.lag_hours)} cols)")
+
+        # Rolling-window features (shifted by 1 so the current row is excluded)
+        if self.create_rolling_features:
+            for col in drivers:
+                shifted = grouped[col].shift(1)
+                for win in self.rolling_windows:
+                    roll = shifted.groupby(df['city'], sort=False).rolling(
+                        window=win, min_periods=1
+                    )
+                    new_cols[f'{col}_rollmean_{win}h'] = roll.mean().reset_index(level=0, drop=True)
+                    # Volatility only for the primary PM drivers (keeps width sane)
+                    if col in ('pm2_5', 'pm10'):
+                        new_cols[f'{col}_rollstd_{win}h'] = roll.std().reset_index(level=0, drop=True)
+            logger.info(f"   OK Rolling means {self.rolling_windows}h for {len(drivers)} drivers")
+
+        # Attach all new columns at once (avoids fragmented inserts)
+        df = pd.concat([df, pd.DataFrame(new_cols, index=df.index)], axis=1)
+
+        # Fill NaNs from the lag/roll warm-up, per city
+        temporal_cols = list(new_cols.keys())
+        df[temporal_cols] = (
+            df.groupby('city', sort=False)[temporal_cols]
+              .transform(lambda s: s.ffill().bfill())
+        )
+        # Any city still fully-NaN for a column -> global median (last resort)
+        for c in temporal_cols:
+            if df[c].isna().any():
+                df[c] = df[c].fillna(df[c].median())
+
+        logger.info(f"   OK Temporal features added: {len(temporal_cols)} columns")
+        return df
+
     def _encode_categorical(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Encode categorical variables (from notebook: label encoding)
+        Encode categorical variables (label encoding, from notebook).
+        Also writes encoders.json so the serving layer can replicate the mapping.
         """
-        # Label encoding (from notebook)
+        encoders: Dict[str, Dict] = {}
+
         for col in self.categorical_columns:
-            if col in df.columns:
-                # Create sorted encoding (alphabetical)
-                df[f'{col}_encoded'] = pd.Categorical(df[col]).codes
-                logger.info(f"   OK Encoded {col} to {col}_encoded ({df[col].nunique()} categories)")
-        
+            if col not in df.columns:
+                continue
+            # Deterministic: sort categories alphabetically, assign 0-based codes
+            categories = sorted(df[col].dropna().unique().tolist())
+            cat_to_code = {cat: idx for idx, cat in enumerate(categories)}
+            df[f'{col}_encoded'] = df[col].map(cat_to_code).astype("int32")
+            encoders[col] = cat_to_code
+            logger.info(
+                f"   OK Encoded '{col}' → '{col}_encoded' "
+                f"({len(categories)} categories)"
+            )
+
+        # Persist so app.py / serving can reconstruct the same integer mapping
+        encoders_path = self.output_dir / "encoders.json"
+        with open(encoders_path, "w") as f:
+            json.dump(encoders, f, indent=2)
+        logger.info(f"   OK Encoders saved: {encoders_path}")
+
         return df
     
     def _set_data_types(self, df: pd.DataFrame) -> pd.DataFrame:

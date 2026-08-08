@@ -35,7 +35,7 @@ def main():
             stage_logger.info("=" * 80)
             
             # Load config
-            config = ConfigReader("configs/params.yaml")
+            config = ConfigReader("params.yaml")
             stage_logger.info("Configuration loaded")
             
             # Initialize DagsHub manager

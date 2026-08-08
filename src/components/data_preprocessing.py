@@ -146,22 +146,24 @@ class DataPreprocessing:
         Handle out-of-range values (from notebook)
         Set to NaN for later imputation
         """
-        # Valid ranges (from notebook - Delhi-proof)
+        # Valid ranges keyed on the real Open-Meteo schema (Delhi-proof).
         valid_ranges = {
-            'humidity_percent': (0, 100),
-            'dew_point_c': (-40, 50),
-            'wind_gusts_kmh': (0, 200),
-            'precipitation_mm': (0, 500),
-            'pressure_msl_hpa': (900, 1100),
-            'cloud_cover_percent': (0, 100),
-            'pm2_5_ugm3': (0, 2000),
-            'pm10_ugm3': (0, 4000),
-            'co_ugm3': (0, 15000),
-            'no2_ugm3': (0, 1000),
-            'so2_ugm3': (0, 1000),
-            'o3_ugm3': (0, 600),
-            'dust_ugm3': (0, 5000),
-            'aod': (0, 10),
+            'relative_humidity_2m': (0, 100),
+            'dew_point_2m': (-40, 50),
+            'wind_speed_10m': (0, 200),
+            'wind_gusts_10m': (0, 250),
+            'precipitation': (0, 500),
+            'pressure_msl': (900, 1100),
+            'cloud_cover': (0, 100),
+            'pm2_5': (0, 2000),
+            'pm10': (0, 4000),
+            'carbon_monoxide': (0, 15000),
+            'nitrogen_dioxide': (0, 1000),
+            'sulphur_dioxide': (0, 1000),
+            'ozone': (0, 600),
+            'ammonia': (0, 2000),
+            'dust': (0, 5000),
+            'aerosol_optical_depth': (0, 10),
             'us_aqi': (0, 1000),
         }
         
@@ -180,14 +182,14 @@ class DataPreprocessing:
         Fix PM2.5 > PM10 (physically impossible)
         From notebook: swap values
         """
-        if 'pm2_5_ugm3' in df.columns and 'pm10_ugm3' in df.columns:
-            mask = df['pm2_5_ugm3'] > df['pm10_ugm3']
+        if 'pm2_5' in df.columns and 'pm10' in df.columns:
+            mask = df['pm2_5'] > df['pm10']
             n_swaps = mask.sum()
-            
+
             if n_swaps > 0:
                 logger.info(f"   Fixing {n_swaps} cases where PM2.5 > PM10 to swapping values")
-                df.loc[mask, ['pm2_5_ugm3', 'pm10_ugm3']] = \
-                    df.loc[mask, ['pm10_ugm3', 'pm2_5_ugm3']].values
+                df.loc[mask, ['pm2_5', 'pm10']] = \
+                    df.loc[mask, ['pm10', 'pm2_5']].values
         
         return df
     
@@ -197,8 +199,9 @@ class DataPreprocessing:
         Clip to 0
         """
         pollutant_cols = [
-            'pm2_5_ugm3', 'pm10_ugm3', 'co_ugm3', 'no2_ugm3',
-            'so2_ugm3', 'o3_ugm3', 'dust_ugm3', 'aod', 'us_aqi'
+            'pm2_5', 'pm10', 'carbon_monoxide', 'nitrogen_dioxide',
+            'sulphur_dioxide', 'ozone', 'dust', 'ammonia',
+            'aerosol_optical_depth', 'precipitation', 'us_aqi'
         ]
         
         for col in pollutant_cols:
@@ -225,15 +228,21 @@ class DataPreprocessing:
         logger.info(f"   Winsorizing {len(existing_outlier_cols)} columns:")
         
         for col in existing_outlier_cols:
-            arr = df[col].values
-            
-            # Calculate limits
+            # Convert to float so Python None → np.nan before winsorizing
+            s = pd.to_numeric(df[col], errors="coerce")
+            arr = s.values.astype(float)
+
+            # Winsorize only the finite (non-NaN) positions; preserve NaN locations
+            nan_mask = np.isnan(arr)
+            if nan_mask.all():
+                logger.info(f"     SKIP {col} (all NaN)")
+                continue
+
             limits = (self.lower_percentile, 1 - self.upper_percentile)
-            
-            # Winsorize
-            arr_winsorized = winsorize(arr, limits=limits)
-            df[col] = pd.Series(arr_winsorized, index=df.index)
-            
+            arr_winsorized = np.where(nan_mask, np.nan,
+                                      winsorize(np.where(nan_mask, 0.0, arr),
+                                                limits=limits))
+            df[col] = pd.Series(arr_winsorized, index=df.index, dtype="float32")
             logger.info(f"     OK {col}")
         
         return df
@@ -296,7 +305,7 @@ class DataPreprocessing:
             "columns_removed": int(initial_shape[1] - df.shape[1]),
             "missing_values": int(df.isnull().sum().sum()),
             "duplicate_rows": 0,  # Already removed
-            "pm25_mean": float(df.get('pm2_5_ugm3', pd.Series([np.nan])).mean()),
+            "pm25_mean": float(df.get('pm2_5', pd.Series([np.nan])).mean()),
             "us_aqi_mean": float(df.get('us_aqi', pd.Series([np.nan])).mean()),
         }
         
@@ -315,9 +324,9 @@ class DataPreprocessing:
         print(f"  Missing Values:     {df.isnull().sum().sum():,}")
         print(f"  Duplicate Rows:     0 (removed)")
         
-        if 'pm2_5_ugm3' in df.columns:
+        if 'pm2_5' in df.columns:
             print(f"\nPM2.5 Statistics:")
-            print(f"  Mean:               {df['pm2_5_ugm3'].mean():.2f}")
-            print(f"  Max:                {df['pm2_5_ugm3'].max():.2f}")
+            print(f"  Mean:               {df['pm2_5'].mean():.2f}")
+            print(f"  Max:                {df['pm2_5'].max():.2f}")
         
         print("="*90)

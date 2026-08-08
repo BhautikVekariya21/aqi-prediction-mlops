@@ -1,43 +1,43 @@
 {
   "model_type": "XGBoost",
   "optimization_method": "Optuna",
-  "n_trials": 100,
+  "n_trials": 20,
   "best_params": {
     "objective": "reg:squarederror",
     "tree_method": "hist",
     "random_state": 42,
-    "max_depth": 14,
-    "learning_rate": 0.09653791125750026,
-    "subsample": 0.7722612938590498,
-    "colsample_bytree": 0.850039652364748,
-    "colsample_bylevel": 0.7015465934857258,
-    "reg_alpha": 2.748804452756657e-05,
-    "reg_lambda": 0.005238719801716985,
-    "min_child_weight": 8,
-    "gamma": 0.0863685620165385,
+    "max_depth": 4,
+    "learning_rate": 0.11058146376563001,
+    "subsample": 0.7149101287359542,
+    "colsample_bytree": 0.8960660809801553,
+    "colsample_bylevel": 0.8930611923241643,
+    "reg_alpha": 6.235377135673157e-05,
+    "reg_lambda": 1.0521761868451132e-05,
+    "min_child_weight": 7,
+    "gamma": 0.35342867192380856,
     "max_bin": 128
   },
   "baseline_metrics": {
-    "rmse": 13.577338218688965,
-    "mae": 9.263018608093262,
-    "r2_score": 0.9313979004268236,
-    "mape": 11.036046594381332,
-    "within_5_pct": 39.59681082689808,
-    "within_10_pct": 66.39463667549067,
-    "within_25_pct": 94.24037844018734,
-    "within_50_pct": 99.45489575664541
+    "rmse": 10.319212792113834,
+    "mae": 1.9139302968978882,
+    "r2_score": 0.9693097472190857,
+    "mape": 1.4485820196568966,
+    "within_5_pct": 95.8184851309122,
+    "within_10_pct": 98.146161135956,
+    "within_25_pct": 99.06564015006148,
+    "within_50_pct": 99.33819440637212
   },
   "optimized_metrics": {
-    "rmse": 9.730025291442871,
-    "mae": 6.047656059265137,
-    "r2_score": 0.9647680966321409,
-    "mape": 7.0775337517261505,
-    "within_5_pct": 58.28934383859902,
-    "within_10_pct": 82.73914882285679,
-    "within_25_pct": 98.02086433483184,
-    "within_50_pct": 99.71569994204351
+    "rmse": 9.536267170152446,
+    "mae": 2.5118820667266846,
+    "r2_score": 0.973790168762207,
+    "mape": 2.2115880623459816,
+    "within_5_pct": 90.07369929746791,
+    "within_10_pct": 96.72621611672841,
+    "within_25_pct": 98.86279086160039,
+    "within_50_pct": 99.28493667812752
   },
-  "performance_degradation": -0.03337019620531734,
+  "performance_degradation": -0.004480421543121338,
   "compression_method": "gzip",
   "compression_level": 9,
   "target_size_mb": 25.0,
@@ -46,5 +46,5 @@
     "gzip": "models\\optimized\\model.json.gz",
     "features": "models\\optimized\\features.txt"
   },
-  "created_at": "2025-12-09 12:18:58"
+  "created_at": "2026-08-08 20:23:01"
 }

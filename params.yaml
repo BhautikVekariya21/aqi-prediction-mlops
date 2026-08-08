@@ -38,16 +38,13 @@ data_preprocessing:
   input_path: "data/raw/aqi_india_raw.parquet"
   output_dir: "data/processed"
   
+  # Redundant / highly-correlated columns present in the real Open-Meteo schema.
   drop_columns:
-    - "eu_aqi"
-    - "eu_aqi_pm10"
-    - "eu_aqi_pm25"
-    - "rain_mm"
-    - "solar_radiation_wm2"
-    - "us_aqi_no2"
-    - "us_aqi_pm10"
-    - "us_aqi_pm25"
-    - "week_of_year"
+    - "surface_pressure"    # ~identical to pressure_msl
+    - "rain"                # subset of precipitation
+    - "cloud_cover_low"     # captured by cloud_cover
+    - "cloud_cover_mid"
+    - "cloud_cover_high"
   
   imputation:
     method: "knn"
@@ -58,24 +55,27 @@ data_preprocessing:
     method: "winsorize"
     lower_percentile: 0.005
     upper_percentile: 0.997
+    # Real Open-Meteo schema names. Winsorizing caps statistically-extreme
+    # values while preserving real pollution spikes.
     columns:
-      - "pm2_5_ugm3"
-      - "pm10_ugm3"
-      - "co_ugm3"
-      - "no2_ugm3"
-      - "so2_ugm3"
-      - "o3_ugm3"
-      - "dust_ugm3"
-      - "aod"
+      - "pm2_5"
+      - "pm10"
+      - "carbon_monoxide"
+      - "nitrogen_dioxide"
+      - "sulphur_dioxide"
+      - "ozone"
+      - "ammonia"
+      - "dust"
+      - "aerosol_optical_depth"
       - "us_aqi"
-      - "dew_point_c"
-      - "wind_gusts_kmh"
+      - "dew_point_2m"
+      - "wind_gusts_10m"
 
 # ----- Feature Engineering Parameters -----
 feature_engineering:
   input_path: "data/processed/aqi_india_processed.parquet"
   output_dir: "data/features"
-  target: "us_aqi"
+  target: "aqi_cpcb"
   
   categorical_columns:
     - "city"
@@ -84,29 +84,53 @@ feature_engineering:
   
   create_cyclical_features: true
   create_interaction_features: false
+  # Generic shift-based lag/roll features are DISABLED: the model relies on the
+  # 7 CPCB trailing averages (below) which are exactly what the label is defined
+  # from. Fewer features -> exact, low-risk reconstruction at serving time.
   create_lag_features: false
   create_rolling_features: false
-  
+
+  # Exogenous drivers to lag/roll (raw Open-Meteo names). Never the target.
+  temporal_driver_columns:
+    - "pm2_5"
+    - "pm10"
+    - "carbon_monoxide"
+    - "nitrogen_dioxide"
+    - "sulphur_dioxide"
+    - "ammonia"
+    - "ozone"
+    - "dust"
+    - "aerosol_optical_depth"
+    - "wind_speed_10m"
+    - "relative_humidity_2m"
+  lag_hours: [1, 3, 24]
+  rolling_windows: [8, 24]
+
   scaling_method: "none"
 
 # ----- Feature Selection Parameters -----
 feature_selection:
   input_path: "data/features/aqi_features.parquet"
   output_dir: "data/features/selection"
-  target: "us_aqi"
-  top_n_features: 30
-  
+  target: "aqi_cpcb"
+  top_n_features: 45
+
   exclude_columns:
-    - "us_aqi"
+    - "aqi_cpcb"             # target
+    - "us_aqi"              # US-EPA label -> leakage against the CPCB target
     - "datetime"
     - "day_name"
     - "season"
     - "time_of_day"
     - "aqi_category"
     - "pm25_category_india"
+    - "humidity_category"
+    - "wind_category"
     - "festival_period"
     - "crop_burning_season"
-  
+
+  # The 7 CPCB averaging drivers are the quantities the label is defined from,
+  # so they must always survive selection (train/serve parity).
   must_have_features:
     - "latitude"
     - "longitude"
@@ -114,12 +138,19 @@ feature_selection:
     - "city_encoded"
     - "state_encoded"
     - "is_weekend"
-  
+    - "pm2_5_avg24"
+    - "pm10_avg24"
+    - "nitrogen_dioxide_avg24"
+    - "sulphur_dioxide_avg24"
+    - "ammonia_avg24"
+    - "carbon_monoxide_avg8"
+    - "ozone_avg8"
+
   methods:
     correlation: true
-    mutual_info: true
+    mutual_info: false
     decision_tree: true
-    lightgbm: true
+    lightgbm: false
     xgboost: true
 
 # ----- Data Splitting Parameters -----
@@ -136,15 +167,13 @@ data_splitting:
 model_training:
   splits_dir: "data/splits"
   output_dir: "models"
-  target: "us_aqi"
-  
+  target: "aqi_cpcb"
+
+  # Fast, focused scope: a single strong XGBoost (not the 5-model comparison).
+  # To restore the full comparison, re-add the other model names here.
   models:
-    - "decision_tree"
-    - "random_forest"
-    - "extra_trees"
     - "xgboost"
-    - "catboost"
-  
+
   primary_metric: "r2_score"
   early_stopping_rounds: 50
   use_float32: true
@@ -176,13 +205,14 @@ model_params:
     n_jobs: 4
   
   xgboost:
-    n_estimators: 500
+    n_estimators: 1200
     max_depth: 8
     learning_rate: 0.05
     subsample: 0.8
     colsample_bytree: 0.8
+    min_child_weight: 5
     reg_alpha: 0.1
-    reg_lambda: 0.1
+    reg_lambda: 1.0
     tree_method: "hist"
     n_jobs: 4
   
@@ -212,7 +242,7 @@ model_optimization:
   
   optuna:
     n_trials: 20
-    timeout: 3600
+    timeout: 600
     n_jobs: 2
     study_name: "xgboost_optimization"
     direction: "maximize"

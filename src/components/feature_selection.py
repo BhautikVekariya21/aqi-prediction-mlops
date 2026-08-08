@@ -9,7 +9,7 @@ import numpy as np
 from pathlib import Path
 from typing import List, Dict, Tuple
 import json
-import lightgbm as lgb
+# lightgbm imported lazily inside _lightgbm_importance() — only when method is enabled
 import xgboost as xgb
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.feature_selection import mutual_info_regression
@@ -350,6 +350,7 @@ class FeatureSelection:
         """
         Method 4: LightGBM importance (from notebook)
         """
+        import lightgbm as lgb  # lazy import — only when lightgbm method is enabled
         lgb_train = lgb.Dataset(X, label=y, feature_name=feature_cols, free_raw_data=False)
         
         lgb_params = {
@@ -454,8 +455,9 @@ class FeatureSelection:
             if encoded_col not in selected_features and encoded_col in feature_cols:
                 selected_features.append(encoded_col)
         
-        # Remove duplicates
-        final_features = list(set(selected_features))
+        # Remove duplicates while preserving insertion order (list(set(...)) is
+        # non-deterministic across Python runs — use dict.fromkeys instead)
+        final_features = list(dict.fromkeys(selected_features))
         
         logger.info(f"   OK Combined rankings from {len(all_importances)} methods")
         logger.info(f"   OK Selected {len(final_features)} final features")

@@ -57,27 +57,22 @@ class AQIMetrics:
     @staticmethod
     def get_aqi_category(aqi_value: float) -> Tuple[str, str]:
         """
-        Convert AQI value to category and emoji
-        Matches notebook categorization exactly
-        
-        Args:
-            aqi_value: AQI value
-        
-        Returns:
-            Tuple of (category_name, emoji)
+        Convert AQI value to CPCB category and emoji.
+        Replaces old US-EPA breakpoints (150/200/300 thresholds) with
+        Indian CPCB breakpoints (0-50 Good … 401-500 Severe).
         """
         if aqi_value <= 50:
             return "Good", "🟢"
         elif aqi_value <= 100:
-            return "Moderate", "🟡"
-        elif aqi_value <= 150:
-            return "Unhealthy for Sensitive Groups", "🟠"
+            return "Satisfactory", "🟡"
         elif aqi_value <= 200:
-            return "Unhealthy", "🔴"
+            return "Moderate", "🟠"
         elif aqi_value <= 300:
-            return "Very Unhealthy", "🟣"
+            return "Poor", "🔴"
+        elif aqi_value <= 400:
+            return "Very Poor", "🟣"
         else:
-            return "Hazardous", "🟤"
+            return "Severe", "🟤"
     
     @staticmethod
     def print_metrics_summary(metrics: Dict[str, float], dataset_name: str = "Test") -> None:
